@@ -117,7 +117,7 @@ enabled only with an explicit flag, for tests that want to sign locally.
 
 ## Tech choices
 
-- `github.com/lestrrat-go/jwx/v2` for JOSE primitives (thumbprints, signing, JWKS).
+- `github.com/lestrrat-go/jwx/v4` for JOSE primitives (thumbprints, signing, JWKS).
 - Standard library `net/http` (Go 1.22+ method routing); no web framework.
 - `github.com/golang-jwt/jwt/v5` as an independent validator in tests (cross-library proof).
 - Distroless static Docker image, non-root, single exposed port.

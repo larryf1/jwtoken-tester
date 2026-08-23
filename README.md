@@ -1,0 +1,178 @@
+# jwtoken-tester
+
+An **ephemeral JWT/JWKS issuer** for integration-testing JWT-aware services.
+
+It behaves like a tiny OpenID Connect-style identity provider whose public keys your app can
+fetch and verify against — but it holds **zero persisted secrets**: RSA keypairs are generated
+in memory at startup and discarded on shutdown. Real IdPs bring secrets, configuration, and
+network dependencies; this is the throwaway replacement you point a test environment at instead
+of hacking basic-auth shortcuts into your middleware.
+
+> **Test tooling only.** Not a production IdP: no users, no consent, no refresh tokens, no TLS.
+> Binds to loopback by default and warns loudly if bound elsewhere.
+
+## How it works
+
+```
+┌──────────────────────────────────────────────┐
+│                jwtoken-tester                │
+│                                              │
+│  In-memory KeyRing                           │
+│   ├─ active key (RSA 2048)                   │
+│   ├─ retiring keys (grace window)            │
+│   └─ rotation goroutine                      │
+│                                              │
+│  HTTP API                                    │
+│   GET  /                                     │
+│   GET  /healthz                              │
+│   GET  /.well-known/jwks.json                │
+│   GET  /.well-known/openid-configuration     │
+│   POST /token        ← mint arbitrary JWTs   │
+└──────────────────────────────────────────────┘
+```
+
+Tokens are standards-compliant RS256 JWS compact serializations, so real-world JWT middleware
+(Spring Security, go-jose, golang-jwt, jsonwebtoken, …) accepts them unchanged — most libraries
+auto-configure from the discovery document alone.
+
+Each signing key's `kid` is the unpadded base64url SHA-256 [RFC 7638](https://datatracker.ietf.org/doc/html/rfc7638)
+thumbprint of its public JWK, so JWKS consumers can match keys without special-casing.
+
+### Key lifecycle
+
+1. On boot a keypair is generated from `crypto/rand`. Private keys never touch disk, env vars,
+   logs, or HTTP responses.
+2. Every `ROTATION_INTERVAL` (default `30m`) a fresh key becomes active. The previous key stays
+   published in the JWKS for `GRACE_PERIOD` so outstanding tokens keep validating, then it is
+   zeroized in memory and dropped from the set.
+3. Set `ROTATION_INTERVAL=0` when tests need long-lived key stability.
+
+## Quick start
+
+Requires Go 1.27+.
+
+```sh
+go run ./cmd/jwtoken-tester
+# INFO listening addr=127.0.0.1:8080 issuer=http://127.0.0.1:8080 ...
+# WARN TEST ISSUER ONLY: keys are generated in memory and never persisted
+```
+
+Mint a token:
+
+```sh
+curl -s http://127.0.0.1:8080/token -d '{
+  "claims": {
+    "sub": "user-123",
+    "aud": ["my-service"],
+    "roles": ["admin"],
+    "tenant": "acme"
+  }
+}'
+```
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+Use it:
+
+```sh
+curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:3000/api/things
+```
+
+Point the app under test at the issuer (e.g. env `ISSUER_URL=http://127.0.0.1:8080`) and it will
+pull the JWKS from `/.well-known/jwks.json` like any other IdP.
+
+## API
+
+### `POST /token`
+
+Request body is JSON (empty body mints an anonymous token with defaults):
+
+| Field     | Type             | Description                                                        |
+|-----------|------------------|--------------------------------------------------------------------|
+| `claims`  | object           | Arbitrary claim set; standard claims included                       |
+| `alg`     | string, optional | Only `RS256` supported today; anything else → `400`                 |
+| `headers` | object, optional | Extra protected JOSE header parameters to embed                     |
+
+Rules:
+
+- `iss`, `iat`, `nbf` are injected automatically; explicit values in `claims` win
+  (overriding `iss` enables negative-path issuer-mismatch tests).
+- `exp`, `iat`, and `nbf` accept epoch seconds (`1800000000`, `"1800000000"`), durations
+  (`"90m"`, `"in 1h"`, negative for already-expired), or RFC 3339 timestamps.
+- Omitted `exp` means now + `DEFAULT_TTL`. Lifetimes beyond `MAX_TTL` are refused with `400`.
+  Tokens that are *already expired* are minted happily — handy for negative tests.
+- Empty body ⇒ anonymous token carrying just the injected defaults; good smoke test.
+
+Error responses are `{"error": "<message>"}` with status `400` (bad JSON, unsupported alg,
+lifetime cap exceeded), `405` (wrong method), or `503` (no active signing key).
+
+Example — deliberately broken token for a rejection test:
+
+```sh
+curl -s http://127.0.0.1:8080/token -d '{"claims":{"iss":"https://attacker.example","exp":"-5m"}}'
+```
+
+### `GET /.well-known/openid-configuration`
+
+OIDC-style discovery document advertising `issuer`, `jwks_uri`, `token_endpoint`, and
+`id_token_signing_alg_values_supported: ["RS256"]`.
+
+### `GET /.well-known/jwks.json`
+
+The live public key set: active key plus retired keys still inside their grace window,
+each tagged `use=sig`, `alg=RS256`, and thumbprint-derived `kid`.
+
+### `GET /healthz`
+
+Liveness plus the current `active_kid`, and an explicit reminder that this is a test issuer.
+
+## Configuration
+
+Every setting can be passed as an environment variable or the equivalent flag (flag wins):
+
+| Env                  | Flag                  | Default                 | Meaning                                |
+|----------------------|-----------------------|-------------------------|----------------------------------------|
+| `LISTEN`             | `--listen`            | `127.0.0.1:8080`        | bind address                           |
+| `ISSUER`             | `--issuer`            | `http://127.0.0.1:8080` | external base URL used as `iss`        |
+| `DEFAULT_TTL`        | `--default-ttl`       | `1h`                    | token lifetime when `exp` omitted      |
+| `MAX_TTL`            | `--max-ttl`           | `24h`                   | lifetime cap, `0` disables             |
+| `ROTATION_INTERVAL`  | `--rotation-interval` | `30m`                   | key rotation cadence, `0` disables     |
+| `GRACE_PERIOD`       | `--grace-period`      | `25h`                   | retired keys stay published this long  |
+
+Durations use Go syntax: `30s`, `45m`, `12h`. Keep `GRACE_PERIOD ≥ MAX_TTL` so tokens minted
+just before a rotation stay verifiable until they expire.
+
+## Development
+
+```sh
+make build   # compile to bin/jwtoken-tester(.exe)
+make test    # go test ./...
+make lint    # go vet + gofmt formatting check (make fmt fixes)
+make all     # lint, test, build in one pass
+```
+
+Tests cross-validate every minted token with `github.com/golang-jwt/jwt/v5` — an independent
+library from the signer (`github.com/lestrrat-go/jwx/v4`) — proving the output is not just
+self-consistent but genuinely spec-compliant.
+
+Project layout:
+
+```
+cmd/jwtoken-tester/     main binary, flag/env configuration
+internal/keyring/       key generation, rotation, RFC 7638 kids, zeroization
+internal/tokenfactory/  claim templating, TTL parsing, signing
+internal/server/        HTTP handlers, JWKS, discovery document
+```
+
+## Roadmap
+
+- [x] Keyring + `/token` + JWKS + discovery, RS256, validated against golang-jwt
+- [ ] ES256 / EdDSA support alongside RS256
+- [ ] Embeddable Go library mode (`httptest` server helper) and CLI one-shot mode
+- [ ] Distroless Docker image + docker-compose example wired to a demo protected service
