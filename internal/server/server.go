@@ -14,12 +14,12 @@ import (
 const maxRequestBody = 1 << 20
 
 type Server struct {
-	ring    *keyring.KeyRing
+	ring    keyring.Ring
 	factory *tokenfactory.Factory
 	issuer  string
 }
 
-func New(ring *keyring.KeyRing, factory *tokenfactory.Factory, issuer string) *Server {
+func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string) *Server {
 	return &Server{ring: ring, factory: factory, issuer: issuer}
 }
 

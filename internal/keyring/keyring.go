@@ -44,6 +44,17 @@ type KeyRing struct {
 	bits    int
 }
 
+type Ring interface {
+	Signer() (*Key, error)
+	ActiveKid() (string, error)
+	JWKS() (jwk.Set, error)
+	Rotate() error
+	RotateAt(now time.Time) error
+	Prune()
+	PruneAt(now time.Time)
+	StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger)
+}
+
 func New(grace time.Duration) (*KeyRing, error) {
 	r := &KeyRing{grace: grace, bits: rsaBits}
 	k, err := r.generateKey()

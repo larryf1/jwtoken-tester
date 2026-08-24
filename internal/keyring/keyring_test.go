@@ -6,12 +6,14 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
 func newTestRing(t *testing.T, grace time.Duration) *KeyRing {
@@ -267,4 +269,138 @@ func TestJWKSWithNoActiveKey(t *testing.T) {
 	if set.Len() != 0 {
 		t.Fatalf("JWKS length = %d, want 0", set.Len())
 	}
+}
+
+func TestJWKSErrorWhenAddKeyFails(t *testing.T) {
+	r := &failingKeyRing{err: errors.New("add key failed")}
+	_, err := r.JWKS()
+	if err == nil {
+		t.Fatal("expected error from JWKS when AddKey fails")
+	}
+}
+
+type failingKeyRing struct {
+	err error
+}
+
+func (f *failingKeyRing) Signer() (*Key, error)      { return nil, f.err }
+func (f *failingKeyRing) ActiveKid() (string, error) { return "", f.err }
+func (f *failingKeyRing) JWKS() (jwk.Set, error)     { return nil, f.err }
+func (f *failingKeyRing) Rotate() error              { return f.err }
+func (f *failingKeyRing) RotateAt(time.Time) error   { return f.err }
+func (f *failingKeyRing) Prune()                     {}
+func (f *failingKeyRing) PruneAt(time.Time)          {}
+func (f *failingKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) {
+	if interval <= 0 {
+		logger.Info("key rotation disabled")
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := f.RotateAt(now); err != nil {
+					logger.Error("key rotation failed", "error", err)
+					continue
+				}
+				f.PruneAt(now)
+				kid, err := f.ActiveKid()
+				if err != nil {
+					logger.Error("post-rotation state invalid", "error", err)
+					continue
+				}
+				logger.Info("signing key rotated", "active_kid", kid)
+			}
+		}
+	}()
+}
+
+func TestRotateAtErrorPath(t *testing.T) {
+	r := &KeyRing{bits: -1}
+	err := r.RotateAt(time.Now())
+	if err == nil {
+		t.Fatal("expected error from RotateAt when generateKey fails")
+	}
+}
+
+func TestStartRotationErrorPaths(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	r := &failingKeyRing{err: errors.New("rotate failed")}
+	r.StartRotation(ctx, 10*time.Millisecond, logger)
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	output := buf.String()
+	if !strings.Contains(output, "key rotation failed") {
+		t.Fatalf("expected log about key rotation failed, got: %s", output)
+	}
+}
+
+func TestStartRotationActiveKidErrorPath(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	r := &failingActiveKidKeyRing{}
+	r.StartRotation(ctx, 10*time.Millisecond, logger)
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	output := buf.String()
+	if !strings.Contains(output, "post-rotation state invalid") {
+		t.Fatalf("expected log about post-rotation state invalid, got: %s", output)
+	}
+}
+
+type failingActiveKidKeyRing struct {
+	rotateCount int
+}
+
+func (f *failingActiveKidKeyRing) Signer() (*Key, error)      { return &Key{}, nil }
+func (f *failingActiveKidKeyRing) ActiveKid() (string, error) { return "", errors.New("no active key") }
+func (f *failingActiveKidKeyRing) JWKS() (jwk.Set, error)     { return jwk.NewSet(), nil }
+func (f *failingActiveKidKeyRing) Rotate() error              { return nil }
+func (f *failingActiveKidKeyRing) RotateAt(time.Time) error   { return nil }
+func (f *failingActiveKidKeyRing) Prune()                     {}
+func (f *failingActiveKidKeyRing) PruneAt(time.Time)          {}
+func (f *failingActiveKidKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) {
+	if interval <= 0 {
+		logger.Info("key rotation disabled")
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := f.RotateAt(now); err != nil {
+					logger.Error("key rotation failed", "error", err)
+					continue
+				}
+				f.PruneAt(now)
+				kid, err := f.ActiveKid()
+				if err != nil {
+					logger.Error("post-rotation state invalid", "error", err)
+					continue
+				}
+				logger.Info("signing key rotated", "active_kid", kid)
+			}
+		}
+	}()
 }

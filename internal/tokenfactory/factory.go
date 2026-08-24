@@ -34,13 +34,13 @@ type Response struct {
 }
 
 type Factory struct {
-	ring       *keyring.KeyRing
+	ring       keyring.Ring
 	issuer     string
 	defaultTTL time.Duration
 	maxTTL     time.Duration
 }
 
-func NewFactory(ring *keyring.KeyRing, issuer string, defaultTTL, maxTTL time.Duration) *Factory {
+func NewFactory(ring keyring.Ring, issuer string, defaultTTL, maxTTL time.Duration) *Factory {
 	return &Factory{ring: ring, issuer: issuer, defaultTTL: defaultTTL, maxTTL: maxTTL}
 }
 

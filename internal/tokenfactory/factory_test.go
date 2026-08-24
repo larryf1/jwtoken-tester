@@ -1,14 +1,17 @@
 package tokenfactory
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	jwt5 "github.com/golang-jwt/jwt/v5"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"jwtoken-tester/internal/keyring"
 )
@@ -234,3 +237,43 @@ func TestCustomProtectedHeadersAreEmbedded(t *testing.T) {
 		t.Fatalf("custom header missing: %#v", header)
 	}
 }
+
+type failingSignerRing struct {
+	err error
+}
+
+func (f *failingSignerRing) Signer() (*keyring.Key, error)                              { return nil, f.err }
+func (f *failingSignerRing) ActiveKid() (string, error)                                 { return "", f.err }
+func (f *failingSignerRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
+func (f *failingSignerRing) Rotate() error                                              { return nil }
+func (f *failingSignerRing) RotateAt(time.Time) error                                   { return nil }
+func (f *failingSignerRing) Prune()                                                     {}
+func (f *failingSignerRing) PruneAt(time.Time)                                          {}
+func (f *failingSignerRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+
+func TestMintReturnsErrNoActiveKey(t *testing.T) {
+	ring := &failingSignerRing{err: keyring.ErrNoActiveKey}
+	f := NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+
+	_, err := f.Mint(&Request{})
+	if !errors.Is(err, keyring.ErrNoActiveKey) {
+		t.Fatalf("error = %v, want ErrNoActiveKey", err)
+	}
+}
+
+type failingJWKSRing struct {
+	err error
+}
+
+func (f *failingJWKSRing) Signer() (*keyring.Key, error) {
+	k, _ := keyring.New(time.Hour)
+	signer, _ := k.Signer()
+	return signer, nil
+}
+func (f *failingJWKSRing) ActiveKid() (string, error)                                 { return "test-kid", nil }
+func (f *failingJWKSRing) JWKS() (jwk.Set, error)                                     { return nil, f.err }
+func (f *failingJWKSRing) Rotate() error                                              { return nil }
+func (f *failingJWKSRing) RotateAt(time.Time) error                                   { return nil }
+func (f *failingJWKSRing) Prune()                                                     {}
+func (f *failingJWKSRing) PruneAt(time.Time)                                          {}
+func (f *failingJWKSRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}

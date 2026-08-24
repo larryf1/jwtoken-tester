@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -408,6 +409,51 @@ func (n *noActiveKeyRing) RotateAt(time.Time) error {
 	return nil
 }
 
+func (n *noActiveKeyRing) Prune() {}
+
 func (n *noActiveKeyRing) PruneAt(time.Time) {}
 
 func (n *noActiveKeyRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+
+func (n *noActiveKeyRing) Rotate() error { return nil }
+
+type failingJWKSRing struct{}
+
+func (f *failingJWKSRing) Signer() (*keyring.Key, error)                              { return nil, keyring.ErrNoActiveKey }
+func (f *failingJWKSRing) ActiveKid() (string, error)                                 { return "", keyring.ErrNoActiveKey }
+func (f *failingJWKSRing) JWKS() (jwk.Set, error)                                     { return nil, errors.New("jwks failed") }
+func (f *failingJWKSRing) Rotate() error                                              { return nil }
+func (f *failingJWKSRing) RotateAt(time.Time) error                                   { return nil }
+func (f *failingJWKSRing) Prune()                                                     {}
+func (f *failingJWKSRing) PruneAt(time.Time)                                          {}
+func (f *failingJWKSRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+
+func TestJWKSEndpointHandlesError(t *testing.T) {
+	ring := &failingJWKSRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	s := New(ring, factory, testIssuer)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	s.handleJWKS(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
+
+func TestHandleTokenNoActiveKeyReturns503(t *testing.T) {
+	ring := &noActiveKeyRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	s := New(ring, factory, testIssuer)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	s.handleToken(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+}
