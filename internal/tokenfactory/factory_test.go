@@ -109,10 +109,10 @@ func TestMintDefaultsInjectStandardClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNotBefore() error = %v", err)
 	}
-	if lifetime := exp.Time.Sub(iat.Time); lifetime != time.Hour {
+	if lifetime := exp.Sub(iat.Time); lifetime != time.Hour {
 		t.Fatalf("exp-iat = %v, want 1h", lifetime)
 	}
-	if !nbf.Time.Equal(iat.Time) {
+	if !nbf.Equal(iat.Time) {
 		t.Fatalf("nbf = %v, want iat %v", nbf.Time, iat.Time)
 	}
 }

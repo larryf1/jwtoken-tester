@@ -39,7 +39,7 @@ func postJSON(t *testing.T, url, body string) (*http.Response, []byte) {
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
@@ -53,7 +53,7 @@ func fetchJWKS(t *testing.T, url string) jwk.Set {
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read jwks response: %v", err)
@@ -72,7 +72,7 @@ func TestHealthEndpointReportsWarningAndActiveKid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var doc map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
@@ -121,7 +121,7 @@ func TestDiscoveryDocumentPointsAtIssuerAndJWKS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET discovery: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var doc map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
@@ -245,7 +245,7 @@ func TestWrongMethodOnTokenEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /token: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", resp.StatusCode)
 	}
@@ -257,7 +257,7 @@ func TestIndexListsEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(data), "/.well-known/jwks.json") {
 		t.Fatalf("index does not list jwks endpoint: %s", data)

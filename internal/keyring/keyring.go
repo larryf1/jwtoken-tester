@@ -194,11 +194,6 @@ func zeroizePrivate(priv *rsa.PrivateKey) {
 	priv.Precomputed.Dp.SetInt64(0)
 	priv.Precomputed.Dq.SetInt64(0)
 	priv.Precomputed.Qinv.SetInt64(0)
-	for i := range priv.Precomputed.CRTValues {
-		priv.Precomputed.CRTValues[i].Exp.SetInt64(0)
-		priv.Precomputed.CRTValues[i].Coeff.SetInt64(0)
-		priv.Precomputed.CRTValues[i].R.SetInt64(0)
-	}
 	for _, p := range priv.Primes {
 		p.SetInt64(0)
 	}
