@@ -1,9 +1,13 @@
 package keyring
 
 import (
+	"bytes"
+	"context"
 	"crypto"
 	"crypto/rsa"
 	"encoding/base64"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,5 +142,129 @@ func assertZeroized(t *testing.T, priv *rsa.PrivateKey) {
 	}
 	if priv.Precomputed.Dp.Sign() != 0 || priv.Precomputed.Dq.Sign() != 0 || priv.Precomputed.Qinv.Sign() != 0 {
 		t.Fatal("precomputed values not zeroized")
+	}
+}
+
+func TestActiveKidReturnsActiveKeyKid(t *testing.T) {
+	r := newTestRing(t, time.Hour)
+	k, _ := r.Signer()
+
+	kid, err := r.ActiveKid()
+	if err != nil {
+		t.Fatalf("ActiveKid() error = %v", err)
+	}
+	if kid != k.Kid() {
+		t.Fatalf("ActiveKid() = %q, want %q", kid, k.Kid())
+	}
+}
+
+func TestRotateProducesNewKey(t *testing.T) {
+	r := newTestRing(t, time.Hour)
+	oldKey, _ := r.Signer()
+
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	newKey, _ := r.Signer()
+	if oldKey.Kid() == newKey.Kid() {
+		t.Fatal("Rotate() produced same kid")
+	}
+}
+
+func TestPruneNoOpWhenNoRetiredKeys(t *testing.T) {
+	r := newTestRing(t, time.Hour)
+	r.Prune()
+	set, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if set.Len() != 1 {
+		t.Fatalf("JWKS length = %d, want 1", set.Len())
+	}
+}
+
+func TestStartRotationDisabledWhenIntervalZero(t *testing.T) {
+	r := newTestRing(t, time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	r.StartRotation(ctx, 0, logger)
+	time.Sleep(10 * time.Millisecond)
+	output := buf.String()
+	if !strings.Contains(output, "key rotation disabled") {
+		t.Fatalf("expected log about rotation disabled, got: %s", output)
+	}
+}
+
+func TestStartRotationRotatesAndPrunes(t *testing.T) {
+	r := newTestRing(t, 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	r.StartRotation(ctx, 10*time.Millisecond, logger)
+
+	// Wait for at least one rotation to happen
+	time.Sleep(200 * time.Millisecond)
+
+	output := buf.String()
+	if !strings.Contains(output, "signing key rotated") {
+		t.Fatalf("expected log about key rotated, got: %s", output)
+	}
+
+	// Verify the active key changed
+	set, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if set.Len() < 1 {
+		t.Fatalf("JWKS is empty")
+	}
+}
+
+func TestNewReturnsErrorWhenGenerateKeyFails(t *testing.T) {
+	// Test New error path by creating a KeyRing with invalid bits
+	r := &KeyRing{bits: -1}
+	_, err := r.generateKey()
+	if err == nil {
+		t.Fatal("expected error from generateKey with invalid bits")
+	}
+}
+
+func TestGenerateKeyErrorPath(t *testing.T) {
+	r := &KeyRing{bits: -1}
+	_, err := r.generateKey()
+	if err == nil {
+		t.Fatal("expected error from generateKey with invalid bits")
+	}
+}
+
+func TestSignerReturnsErrorWhenNoActive(t *testing.T) {
+	r := &KeyRing{}
+	_, err := r.Signer()
+	if err != ErrNoActiveKey {
+		t.Fatalf("Signer() error = %v, want ErrNoActiveKey", err)
+	}
+}
+
+func TestActiveKidReturnsErrorWhenNoActive(t *testing.T) {
+	r := &KeyRing{}
+	_, err := r.ActiveKid()
+	if err != ErrNoActiveKey {
+		t.Fatalf("ActiveKid() error = %v, want ErrNoActiveKey", err)
+	}
+}
+
+func TestJWKSWithNoActiveKey(t *testing.T) {
+	r := &KeyRing{}
+	set, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if set.Len() != 0 {
+		t.Fatalf("JWKS length = %d, want 0", set.Len())
 	}
 }

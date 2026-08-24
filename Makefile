@@ -21,9 +21,17 @@ run: build ## Build then run the server
 test: ## Run all unit tests
 	go test ./...
 
-coverage: ## Run tests and print per-function coverage totals
-	go test -covermode=atomic -coverprofile=coverage.out ./...
-	go tool cover -func=coverage.out
+COVERAGE_THRESHOLD ?= 90
+COVER_PKGS := jwtoken-tester/internal/keyring jwtoken-tester/internal/server jwtoken-tester/internal/tokenfactory
+COVER_PROFILE := coverage.out
+
+coverage: ## Run tests and print total coverage percentage
+	go test -covermode=atomic -coverprofile=$(COVER_PROFILE) $(COVER_PKGS)
+	@go run cmd/coverage/main.go $(COVER_PROFILE)
+
+coverage-check: ## Run tests and fail if total coverage is below threshold (default 90%)
+	go test -covermode=atomic -coverprofile=$(COVER_PROFILE) $(COVER_PKGS)
+	@go run cmd/coverage/main.go $(COVER_PROFILE) --threshold=$(COVERAGE_THRESHOLD)
 
 coverage-html: ## Generate coverage.html from the latest coverage run
 	go tool cover -html=coverage.out -o coverage.html
