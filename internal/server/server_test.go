@@ -593,3 +593,88 @@ func TestHandleTokenNoActiveKeyReturns503(t *testing.T) {
 		t.Fatalf("status = %d, want 503", w.Code)
 	}
 }
+
+func TestHandleTokenEmptyBody(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+	resp, _ := http.Post(ts.URL+"/token", "application/json", strings.NewReader(""))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+type internalErrRing struct{}
+
+func (r *internalErrRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
+	return nil, errors.New("unexpected error")
+}
+func (r *internalErrRing) ActiveKid(keyring.Algorithm) (string, error) {
+	return "", errors.New("unexpected error")
+}
+func (r *internalErrRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
+func (r *internalErrRing) Rotate() error                                              { return nil }
+func (r *internalErrRing) RotateAt(time.Time) error                                   { return nil }
+func (r *internalErrRing) Prune()                                                     {}
+func (r *internalErrRing) PruneAt(time.Time)                                          {}
+func (r *internalErrRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (r *internalErrRing) EnabledAlgorithms() []keyring.Algorithm {
+	return []keyring.Algorithm{keyring.AlgRS256}
+}
+
+func TestHandleTokenInternalServerError(t *testing.T) {
+	ring := &internalErrRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	s := New(ring, factory, testIssuer)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	s.handleToken(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
+
+type marshalErrorKey struct {
+	jwk.Key
+}
+
+type failingMarshalRing struct{}
+
+func (f *failingMarshalRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
+	return nil, keyring.ErrNoActiveKey
+}
+func (f *failingMarshalRing) ActiveKid(keyring.Algorithm) (string, error) {
+	return "", keyring.ErrNoActiveKey
+}
+func (f *failingMarshalRing) JWKS() (jwk.Set, error) {
+	set := jwk.NewSet()
+	key := &marshalErrorKey{}
+	if err := set.AddKey(key); err != nil {
+		return nil, err
+	}
+	return set, nil
+}
+func (f *failingMarshalRing) Rotate() error                                              { return nil }
+func (f *failingMarshalRing) RotateAt(time.Time) error                                   { return nil }
+func (f *failingMarshalRing) Prune()                                                     {}
+func (f *failingMarshalRing) PruneAt(time.Time)                                          {}
+func (f *failingMarshalRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (f *failingMarshalRing) EnabledAlgorithms() []keyring.Algorithm {
+	return []keyring.Algorithm{keyring.AlgRS256}
+}
+
+func TestJWKSEndpointMarshalError(t *testing.T) {
+	ring := &failingMarshalRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	s := New(ring, factory, testIssuer)
+
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+	w := httptest.NewRecorder()
+	s.handleJWKS(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}

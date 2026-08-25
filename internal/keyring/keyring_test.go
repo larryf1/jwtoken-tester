@@ -558,6 +558,93 @@ func TestEnabledAlgorithms(t *testing.T) {
 	}
 }
 
+func TestJWAAlgorithmsReturnsAllAlgorithms(t *testing.T) {
+	algs := JWAAlgorithms()
+	if len(algs) != 3 {
+		t.Fatalf("expected 3 algorithms, got %d", len(algs))
+	}
+	if algs[AlgRS256] == nil || algs[AlgES256] == nil || algs[AlgEdDSA] == nil {
+		t.Fatal("missing expected algorithm in JWAAlgorithms")
+	}
+}
+
+func TestKidReturnsEmptyWhenNoKeyID(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	k, _ := r.Signer(AlgRS256)
+	if err := k.PubJWK.Remove(jwk.KeyIDKey); err != nil {
+		t.Fatalf("Remove KeyIDKey: %v", err)
+	}
+	if kid := k.Kid(); kid != "" {
+		t.Fatalf("expected empty kid when no KeyID set, got %q", kid)
+	}
+}
+
+func TestGenerateKeyErrors(t *testing.T) {
+	r := &KeyRing{}
+	_, err := r.generateKey(Algorithm("INVALID"))
+	if err == nil {
+		t.Fatal("expected error for invalid algorithm")
+	}
+	if !errors.Is(err, ErrUnsupportedAlg) {
+		t.Fatalf("error = %v, want ErrUnsupportedAlg", err)
+	}
+}
+
+func TestSignerErrors(t *testing.T) {
+	r := &KeyRing{}
+
+	_, err := r.Signer(AlgRS256)
+	if !errors.Is(err, ErrUnsupportedAlg) {
+		t.Fatalf("Signer() with no algorithms: error = %v, want ErrUnsupportedAlg", err)
+	}
+
+	r = newTestRing(t, time.Hour, AlgRS256)
+	_, err = r.Signer(AlgES256)
+	if err == nil {
+		t.Fatal("expected error when algorithm is disabled")
+	}
+	if !errors.Is(err, ErrUnsupportedAlg) {
+		t.Fatalf("error = %v, want ErrUnsupportedAlg", err)
+	}
+}
+
+func TestJWKSWithRetiredKeys(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	oldKey, _ := r.Signer(AlgRS256)
+
+	now := time.Now()
+	if err := r.RotateAt(now); err != nil {
+		t.Fatalf("RotateAt: %v", err)
+	}
+
+	set, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if set.Len() != 2 {
+		t.Fatalf("JWKS length = %d, want 2 (active + retired)", set.Len())
+	}
+
+	if _, ok := set.LookupKeyID(oldKey.Kid()); !ok {
+		t.Fatal("retired key missing from JWKS")
+	}
+}
+
+func TestStartRotationDisabledWhenIntervalNegative(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	r.StartRotation(ctx, -time.Hour, logger)
+	time.Sleep(10 * time.Millisecond)
+	output := buf.String()
+	if !strings.Contains(output, "key rotation disabled") {
+		t.Fatalf("expected log about rotation disabled, got: %s", output)
+	}
+}
+
 func TestNewRequiresAtLeastOneAlgorithm(t *testing.T) {
 	_, err := New(time.Hour, []Algorithm{})
 	if err == nil {

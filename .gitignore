@@ -5,3 +5,7 @@
 /cover
 /coverage
 /coverage.dat
+/coverage.html
+/coverage_tf
+/coverage_server
+/coverage_tf.out
