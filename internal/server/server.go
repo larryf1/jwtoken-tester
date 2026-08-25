@@ -48,12 +48,25 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	doc := map[string]any{
-		"status":    "ok",
-		"algorithm": "RS256",
-		"warning":   "test issuer: keys are ephemeral and in-memory; do not use in production",
+		"status":  "ok",
+		"warning": "test issuer: keys are ephemeral and in-memory; do not use in production",
 	}
-	if kid, err := s.ring.ActiveKid(); err == nil {
-		doc["active_kid"] = kid
+	algorithms := s.ring.EnabledAlgorithms()
+	if len(algorithms) > 0 {
+		algStrs := make([]string, len(algorithms))
+		for i, alg := range algorithms {
+			algStrs[i] = string(alg)
+		}
+		doc["algorithms"] = algStrs
+	}
+	kids := make(map[string]string)
+	for _, alg := range algorithms {
+		if kid, err := s.ring.ActiveKid(alg); err == nil {
+			kids[string(alg)] = kid
+		}
+	}
+	if len(kids) > 0 {
+		doc["active_kids"] = kids
 	}
 	writeJSON(w, http.StatusOK, doc)
 }
@@ -76,12 +89,17 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	base := strings.TrimSuffix(s.issuer, "/")
+	algorithms := s.ring.EnabledAlgorithms()
+	algStrs := make([]string, len(algorithms))
+	for i, alg := range algorithms {
+		algStrs[i] = string(alg)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                s.issuer,
 		"jwks_uri":                              base + "/.well-known/jwks.json",
 		"token_endpoint":                        base + "/token",
 		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"RS256"},
+		"id_token_signing_alg_values_supported": algStrs,
 		"response_types_supported":              []string{"token"},
 		"claims_supported": []string{
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti",

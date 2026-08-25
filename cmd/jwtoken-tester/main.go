@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,6 +25,7 @@ type config struct {
 	MaxTTL         time.Duration
 	RotationPeriod time.Duration
 	GracePeriod    time.Duration
+	Algorithms     string
 }
 
 func main() {
@@ -34,7 +36,8 @@ func main() {
 
 	cfg := loadConfig(logger)
 
-	ring, err := keyring.New(cfg.GracePeriod)
+	enabledAlgs := parseAlgorithms(cfg.Algorithms)
+	ring, err := keyring.New(cfg.GracePeriod, enabledAlgs)
 	if err != nil {
 		logger.Error("initializing key ring", "error", err)
 		os.Exit(1)
@@ -54,6 +57,7 @@ func main() {
 			"issuer", cfg.Issuer,
 			"default_ttl", cfg.DefaultTTL.String(),
 			"max_ttl", cfg.MaxTTL.String(),
+			"algorithms", cfg.Algorithms,
 		)
 		logger.Warn("TEST ISSUER ONLY: keys are generated in memory and never persisted; do not expose to production traffic")
 		warnIfRemoteBind(logger, cfg.Listen)
@@ -100,6 +104,7 @@ func loadConfig(logger *slog.Logger) config {
 		MaxTTL:         envDur("MAX_TTL", 24*time.Hour),
 		RotationPeriod: envDur("ROTATION_INTERVAL", 30*time.Minute),
 		GracePeriod:    envDur("GRACE_PERIOD", 25*time.Hour),
+		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
 	}
 
 	flag.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
@@ -108,9 +113,22 @@ func loadConfig(logger *slog.Logger) config {
 	flag.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
 	flag.DurationVar(&cfg.RotationPeriod, "rotation-interval", cfg.RotationPeriod, "key rotation cadence, 0 disables (env ROTATION_INTERVAL)")
 	flag.DurationVar(&cfg.GracePeriod, "grace-period", cfg.GracePeriod, "retired keys stay published this long (env GRACE_PERIOD)")
+	flag.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable: RS256,ES256,EdDSA (env ALGORITHMS)")
 	flag.Parse()
 
 	return cfg
+}
+
+func parseAlgorithms(s string) []keyring.Algorithm {
+	var algs []keyring.Algorithm
+	for _, part := range strings.Split(s, ",") {
+		alg := strings.TrimSpace(part)
+		if alg == "" {
+			continue
+		}
+		algs = append(algs, keyring.Algorithm(alg))
+	}
+	return algs
 }
 
 func warnIfRemoteBind(logger *slog.Logger, addr string) {

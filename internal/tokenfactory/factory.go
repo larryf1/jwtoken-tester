@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
@@ -48,9 +47,19 @@ func (f *Factory) Mint(req *Request) (*Response, error) {
 	if req == nil {
 		req = &Request{}
 	}
-	alg := jwa.RS256()
-	if req.Alg != "" && req.Alg != alg.String() {
-		return nil, fmt.Errorf("%w: %q (supported: %s)", ErrUnsupportedAlg, req.Alg, alg)
+
+	alg := keyring.AlgRS256
+	if req.Alg != "" {
+		alg = keyring.Algorithm(req.Alg)
+	}
+
+	jwaAlg, ok := keyring.JWAAlgorithms()[alg]
+	if !ok {
+		supported := make([]string, 0, len(keyring.JWAAlgorithms()))
+		for a := range keyring.JWAAlgorithms() {
+			supported = append(supported, string(a))
+		}
+		return nil, fmt.Errorf("%w: %q (supported: %v)", ErrUnsupportedAlg, req.Alg, supported)
 	}
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -103,12 +112,15 @@ func (f *Factory) Mint(req *Request) (*Response, error) {
 		return nil, ErrTTLTooLong
 	}
 
-	signer, err := f.ring.Signer()
+	signer, err := f.ring.Signer(alg)
 	if err != nil {
+		if errors.Is(err, keyring.ErrUnsupportedAlg) {
+			return nil, ErrUnsupportedAlg
+		}
 		return nil, err
 	}
 
-	signOpt := jwt.WithKey(alg, signer.PrivJWK)
+	signOpt := jwt.WithKey(jwaAlg, signer.PrivJWK)
 	if len(req.Headers) > 0 {
 		hdrs := jws.NewHeaders()
 		for name, value := range req.Headers {
@@ -116,7 +128,7 @@ func (f *Factory) Mint(req *Request) (*Response, error) {
 				return nil, fmt.Errorf("%w: header %q: %v", ErrInvalidRequest, name, err)
 			}
 		}
-		signOpt = jwt.WithKey(alg, signer.PrivJWK, jws.WithProtectedHeaders(hdrs))
+		signOpt = jwt.WithKey(jwaAlg, signer.PrivJWK, jws.WithProtectedHeaders(hdrs))
 	}
 
 	signed, err := jwt.Sign(tok, signOpt)

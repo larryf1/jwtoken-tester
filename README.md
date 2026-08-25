@@ -3,7 +3,7 @@
 An **ephemeral JWT/JWKS issuer** for integration-testing JWT-aware services.
 
 It behaves like a tiny OpenID Connect-style identity provider whose public keys your app can
-fetch and verify against — but it holds **zero persisted secrets**: RSA keypairs are generated
+fetch and verify against — but it holds **zero persisted secrets**: keypairs are generated
 in memory at startup and discarded on shutdown. Real IdPs bring secrets, configuration, and
 network dependencies; this is the throwaway replacement you point a test environment at instead
 of hacking basic-auth shortcuts into your middleware.
@@ -18,7 +18,7 @@ of hacking basic-auth shortcuts into your middleware.
 │                jwtoken-tester                │
 │                                              │
 │  In-memory KeyRing                           │
-│   ├─ active key (RSA 2048)                   │
+│   ├─ active key(s): RSA2048 / P-256 / Ed25519│
 │   ├─ retiring keys (grace window)            │
 │   └─ rotation goroutine                      │
 │                                              │
@@ -31,16 +31,16 @@ of hacking basic-auth shortcuts into your middleware.
 └──────────────────────────────────────────────┘
 ```
 
-Tokens are standards-compliant RS256 JWS compact serializations, so real-world JWT middleware
-(Spring Security, go-jose, golang-jwt, jsonwebtoken, …) accepts them unchanged — most libraries
-auto-configure from the discovery document alone.
+Tokens are standards-compliant JWS compact serializations (RS256, ES256, EdDSA), so real-world
+JWT middleware (Spring Security, go-jose, golang-jwt, jsonwebtoken, …) accepts them unchanged —
+most libraries auto-configure from the discovery document alone.
 
 Each signing key's `kid` is the unpadded base64url SHA-256 [RFC 7638](https://datatracker.ietf.org/doc/html/rfc7638)
 thumbprint of its public JWK, so JWKS consumers can match keys without special-casing.
 
 ### Key lifecycle
 
-1. On boot a keypair is generated from `crypto/rand`. Private keys never touch disk, env vars,
+1. On boot keypairs are generated from `crypto/rand`. Private keys never touch disk, env vars,
    logs, or HTTP responses.
 2. Every `ROTATION_INTERVAL` (default `30m`) a fresh key becomes active. The previous key stays
    published in the JWKS for `GRACE_PERIOD` so outstanding tokens keep validating, then it is
@@ -96,7 +96,7 @@ Request body is JSON (empty body mints an anonymous token with defaults):
 | Field     | Type             | Description                                                        |
 |-----------|------------------|--------------------------------------------------------------------|
 | `claims`  | object           | Arbitrary claim set; standard claims included                       |
-| `alg`     | string, optional | Only `RS256` supported today; anything else → `400`                 |
+| `alg`     | string, optional | One of `RS256`, `ES256`, `EdDSA` (must be enabled); anything else → `400` |
 | `headers` | object, optional | Extra protected JOSE header parameters to embed                     |
 
 Rules:
@@ -121,16 +121,16 @@ curl -s http://127.0.0.1:8080/token -d '{"claims":{"iss":"https://attacker.examp
 ### `GET /.well-known/openid-configuration`
 
 OIDC-style discovery document advertising `issuer`, `jwks_uri`, `token_endpoint`, and
-`id_token_signing_alg_values_supported: ["RS256"]`.
+`id_token_signing_alg_values_supported` listing all enabled algorithms.
 
 ### `GET /.well-known/jwks.json`
 
 The live public key set: active key plus retired keys still inside their grace window,
-each tagged `use=sig`, `alg=RS256`, and thumbprint-derived `kid`.
+each tagged `use=sig`, `alg` (RS256/ES256/EdDSA), and thumbprint-derived `kid`.
 
 ### `GET /healthz`
 
-Liveness plus the current `active_kid`, and an explicit reminder that this is a test issuer.
+Liveness plus the current `active_kids` per algorithm, and an explicit reminder that this is a test issuer.
 
 ## Configuration
 
@@ -144,6 +144,7 @@ Every setting can be passed as an environment variable or the equivalent flag (f
 | `MAX_TTL`            | `--max-ttl`           | `24h`                   | lifetime cap, `0` disables             |
 | `ROTATION_INTERVAL`  | `--rotation-interval` | `30m`                   | key rotation cadence, `0` disables     |
 | `GRACE_PERIOD`       | `--grace-period`      | `25h`                   | retired keys stay published this long  |
+| `ALGORITHMS`         | `--algorithms`        | `RS256,ES256,EdDSA`     | comma-separated algorithms to enable   |
 
 Durations use Go syntax: `30s`, `45m`, `12h`. Keep `GRACE_PERIOD ≥ MAX_TTL` so tokens minted
 just before a rotation stay verifiable until they expire.
@@ -173,6 +174,6 @@ internal/server/        HTTP handlers, JWKS, discovery document
 ## Roadmap
 
 - [x] Keyring + `/token` + JWKS + discovery, RS256, validated against golang-jwt
-- [ ] ES256 / EdDSA support alongside RS256
+- [x] ES256 / EdDSA support alongside RS256
 - [ ] Embeddable Go library mode (`httptest` server helper) and CLI one-shot mode
 - [ ] Distroless Docker image + docker-compose example wired to a demo protected service

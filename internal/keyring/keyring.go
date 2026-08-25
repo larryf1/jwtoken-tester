@@ -3,6 +3,9 @@ package keyring
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -16,14 +19,42 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
-const rsaBits = 2048
+const (
+	rsaBits    = 2048
+	ecdsaCurve = "P-256"
+)
 
-var ErrNoActiveKey = errors.New("keyring: no active signing key")
+var (
+	ErrNoActiveKey    = errors.New("keyring: no active signing key")
+	ErrUnsupportedAlg = errors.New("keyring: unsupported algorithm")
+)
+
+type Algorithm string
+
+const (
+	AlgRS256 Algorithm = "RS256"
+	AlgES256 Algorithm = "ES256"
+	AlgEdDSA Algorithm = "EdDSA"
+)
+
+var (
+	allAlgorithms = []Algorithm{AlgRS256, AlgES256, AlgEdDSA}
+	jwaAlgorithms = map[Algorithm]jwa.KeyAlgorithm{
+		AlgRS256: jwa.RS256(),
+		AlgES256: jwa.ES256(),
+		AlgEdDSA: jwa.EdDSA(),
+	}
+)
+
+func JWAAlgorithms() map[Algorithm]jwa.KeyAlgorithm {
+	return jwaAlgorithms
+}
 
 type Key struct {
-	Private   *rsa.PrivateKey
+	Private   crypto.PrivateKey
 	PrivJWK   jwk.Key
 	PubJWK    jwk.Key
+	Algorithm Algorithm
 	CreatedAt time.Time
 	RetiredAt time.Time
 }
@@ -38,38 +69,78 @@ func (k *Key) Kid() string {
 
 type KeyRing struct {
 	mu      sync.RWMutex
-	active  *Key
-	retired []*Key
+	active  map[Algorithm]*Key
+	retired map[Algorithm][]*Key
 	grace   time.Duration
-	bits    int
+	enabled map[Algorithm]bool
 }
 
 type Ring interface {
-	Signer() (*Key, error)
-	ActiveKid() (string, error)
+	Signer(alg Algorithm) (*Key, error)
+	ActiveKid(alg Algorithm) (string, error)
 	JWKS() (jwk.Set, error)
 	Rotate() error
 	RotateAt(now time.Time) error
 	Prune()
 	PruneAt(now time.Time)
 	StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger)
+	EnabledAlgorithms() []Algorithm
 }
 
-func New(grace time.Duration) (*KeyRing, error) {
-	r := &KeyRing{grace: grace, bits: rsaBits}
-	k, err := r.generateKey()
-	if err != nil {
-		return nil, err
+func New(grace time.Duration, enabledAlgs []Algorithm) (*KeyRing, error) {
+	enabled := make(map[Algorithm]bool)
+	for _, alg := range allAlgorithms {
+		enabled[alg] = false
 	}
-	r.active = k
+	for _, alg := range enabledAlgs {
+		enabled[alg] = true
+	}
+
+	if !enabled[AlgRS256] && !enabled[AlgES256] && !enabled[AlgEdDSA] {
+		return nil, errors.New("keyring: at least one algorithm must be enabled")
+	}
+
+	r := &KeyRing{
+		grace:   grace,
+		active:  make(map[Algorithm]*Key),
+		retired: make(map[Algorithm][]*Key),
+		enabled: enabled,
+	}
+
+	for _, alg := range allAlgorithms {
+		if enabled[alg] {
+			k, err := r.generateKey(alg)
+			if err != nil {
+				return nil, err
+			}
+			r.active[alg] = k
+		}
+	}
 	return r, nil
 }
 
-func (r *KeyRing) generateKey() (*Key, error) {
-	priv, err := rsa.GenerateKey(rand.Reader, r.bits)
-	if err != nil {
-		return nil, fmt.Errorf("generate rsa key: %w", err)
+func (r *KeyRing) generateKey(alg Algorithm) (*Key, error) {
+	var priv crypto.PrivateKey
+	var jwaAlg jwa.KeyAlgorithm
+	var err error
+
+	switch alg {
+	case AlgRS256:
+		priv, err = rsa.GenerateKey(rand.Reader, rsaBits)
+		jwaAlg = jwa.RS256()
+	case AlgES256:
+		priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		jwaAlg = jwa.ES256()
+	case AlgEdDSA:
+		_, priv, err = ed25519.GenerateKey(rand.Reader)
+		jwaAlg = jwa.EdDSA()
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedAlg, alg)
 	}
+	if err != nil {
+		return nil, fmt.Errorf("generate %s key: %w", alg, err)
+	}
+
 	privJWK, err := jwk.Import[jwk.Key](priv)
 	if err != nil {
 		return nil, fmt.Errorf("build private jwk: %w", err)
@@ -90,24 +161,28 @@ func (r *KeyRing) generateKey() (*Key, error) {
 		if err := k.Set(jwk.KeyUsageKey, jwk.ForSignature); err != nil {
 			return nil, err
 		}
-		if err := k.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
+		if err := k.Set(jwk.AlgorithmKey, jwaAlg); err != nil {
 			return nil, err
 		}
 	}
-	return &Key{Private: priv, PrivJWK: privJWK, PubJWK: pubJWK, CreatedAt: time.Now()}, nil
+	return &Key{Private: priv, PrivJWK: privJWK, PubJWK: pubJWK, Algorithm: alg, CreatedAt: time.Now()}, nil
 }
 
-func (r *KeyRing) Signer() (*Key, error) {
+func (r *KeyRing) Signer(alg Algorithm) (*Key, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.active == nil {
+	if !r.enabled[alg] {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedAlg, alg)
+	}
+	k, ok := r.active[alg]
+	if !ok || k == nil {
 		return nil, ErrNoActiveKey
 	}
-	return r.active, nil
+	return k, nil
 }
 
-func (r *KeyRing) ActiveKid() (string, error) {
-	k, err := r.Signer()
+func (r *KeyRing) ActiveKid(alg Algorithm) (string, error) {
+	k, err := r.Signer(alg)
 	if err != nil {
 		return "", err
 	}
@@ -118,14 +193,18 @@ func (r *KeyRing) JWKS() (jwk.Set, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	set := jwk.NewSet()
-	if r.active != nil {
-		if err := set.AddKey(r.active.PubJWK); err != nil {
-			return nil, err
+	for _, k := range r.active {
+		if k != nil {
+			if err := set.AddKey(k.PubJWK); err != nil {
+				return nil, err
+			}
 		}
 	}
-	for _, k := range r.retired {
-		if err := set.AddKey(k.PubJWK); err != nil {
-			return nil, err
+	for _, keys := range r.retired {
+		for _, k := range keys {
+			if err := set.AddKey(k.PubJWK); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return set, nil
@@ -136,17 +215,22 @@ func (r *KeyRing) Rotate() error {
 }
 
 func (r *KeyRing) RotateAt(now time.Time) error {
-	k, err := r.generateKey()
-	if err != nil {
-		return err
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.active != nil {
-		r.active.RetiredAt = now
-		r.retired = append(r.retired, r.active)
+	for _, alg := range allAlgorithms {
+		if !r.enabled[alg] {
+			continue
+		}
+		k, err := r.generateKey(alg)
+		if err != nil {
+			return err
+		}
+		if old := r.active[alg]; old != nil {
+			old.RetiredAt = now
+			r.retired[alg] = append(r.retired[alg], old)
+		}
+		r.active[alg] = k
 	}
-	r.active = k
 	return nil
 }
 
@@ -157,18 +241,20 @@ func (r *KeyRing) Prune() {
 func (r *KeyRing) PruneAt(now time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	kept := r.retired[:0]
-	for _, k := range r.retired {
-		if now.Sub(k.RetiredAt) < r.grace {
-			kept = append(kept, k)
-			continue
+	for alg, keys := range r.retired {
+		kept := keys[:0]
+		for _, k := range keys {
+			if now.Sub(k.RetiredAt) < r.grace {
+				kept = append(kept, k)
+				continue
+			}
+			zeroizePrivate(k.Private)
 		}
-		zeroizePrivate(k.Private)
+		for i := len(kept); i < len(keys); i++ {
+			keys[i] = nil
+		}
+		r.retired[alg] = kept
 	}
-	for i := len(kept); i < len(r.retired); i++ {
-		r.retired[i] = nil
-	}
-	r.retired = kept
 }
 
 func (r *KeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) {
@@ -189,23 +275,46 @@ func (r *KeyRing) StartRotation(ctx context.Context, interval time.Duration, log
 					continue
 				}
 				r.PruneAt(now)
-				kid, err := r.ActiveKid()
-				if err != nil {
-					logger.Error("post-rotation state invalid", "error", err)
-					continue
+				var kids []string
+				for _, alg := range allAlgorithms {
+					if kid, err := r.ActiveKid(alg); err == nil {
+						kids = append(kids, fmt.Sprintf("%s=%s", alg, kid))
+					}
 				}
-				logger.Info("signing key rotated", "active_kid", kid)
+				logger.Info("signing keys rotated", "active_kids", kids)
 			}
 		}
 	}()
 }
 
-func zeroizePrivate(priv *rsa.PrivateKey) {
-	priv.D.SetInt64(0)
-	priv.Precomputed.Dp.SetInt64(0)
-	priv.Precomputed.Dq.SetInt64(0)
-	priv.Precomputed.Qinv.SetInt64(0)
-	for _, p := range priv.Primes {
-		p.SetInt64(0)
+func (r *KeyRing) EnabledAlgorithms() []Algorithm {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var algs []Algorithm
+	for _, alg := range allAlgorithms {
+		if r.enabled[alg] {
+			algs = append(algs, alg)
+		}
+	}
+	return algs
+}
+
+func zeroizePrivate(priv crypto.PrivateKey) {
+	switch k := priv.(type) {
+	case *rsa.PrivateKey:
+		k.D.SetInt64(0)
+		k.Precomputed.Dp.SetInt64(0)
+		k.Precomputed.Dq.SetInt64(0)
+		k.Precomputed.Qinv.SetInt64(0)
+		for _, p := range k.Primes {
+			p.SetInt64(0)
+		}
+	case *ecdsa.PrivateKey:
+		// D.SetInt64(0) is deprecated in Go 1.26+; for test-only ephemeral keys
+		// we rely on GC to clear memory. The key is discarded on process exit.
+	case ed25519.PrivateKey:
+		for i := range k {
+			k[i] = 0
+		}
 	}
 }
