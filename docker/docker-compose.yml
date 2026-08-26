@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  jwtoken-tester:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: jwtoken-tester
+    ports:
+      - "8080:8080"
+    environment:
+      - LISTEN=0.0.0.0:8080
+      - ISSUER=http://jwtoken-tester:8080
+      - DEFAULT_TTL=1h
+      - MAX_TTL=24h
+      - ROTATION_INTERVAL=30m
+      - GRACE_PERIOD=25h
+      - ALGORITHMS=RS256,ES256,EdDSA
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - jwt-demo
+
+  demo-service:
+    build:
+      context: ./demo-service
+      dockerfile: Dockerfile
+    container_name: demo-protected-service
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - ISSUER_URL=http://jwtoken-tester:8080
+      - JWKS_URL=http://jwtoken-tester:8080/.well-known/jwks.json
+      - ALLOWED_AUD=demo-service
+      - JWKS_REFRESH=5m
+    depends_on:
+      jwtoken-tester:
+        condition: service_healthy
+    networks:
+      - jwt-demo
+
+networks:
+  jwt-demo:
+    driver: bridge

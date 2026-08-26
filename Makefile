@@ -8,7 +8,7 @@ else
 EXE_SUFFIX :=
 endif
 
-.PHONY: all build run test coverage coverage-html lint lint-install vet fmt fmt-check tidy clean help
+.PHONY: all build run test coverage coverage-html lint lint-install vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
 
 all: lint test build ## Lint, test, then build
 
@@ -17,6 +17,29 @@ build: ## Compile the server binary into bin/
 
 run: build ## Build then run the server
 	$(BIN_DIR)/$(BINARY)$(EXE_SUFFIX)
+
+# Docker targets
+DOCKER_IMAGE := jwtoken-tester
+DOCKER_TAG ?= latest
+DOCKER_REGISTRY ?=
+
+docker-build: ## Build distroless Docker image
+	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+
+docker-push: docker-build ## Push Docker image to registry (set DOCKER_REGISTRY)
+	docker tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(DOCKER_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
+	docker push $(DOCKER_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
+
+docker-compose-up: ## Start docker-compose stack (jwtoken-tester + demo service)
+	docker compose -f docker/docker-compose.yml up --build -d
+	@echo "jwtoken-tester: http://localhost:8080"
+	@echo "demo-service:   http://localhost:8081"
+
+docker-compose-down: ## Stop docker-compose stack
+	docker compose -f docker/docker-compose.yml down
+
+docker-logs: ## Follow docker-compose logs
+	docker compose -f docker/docker-compose.yml logs -f
 
 test: ## Run all unit tests
 	go test ./...
