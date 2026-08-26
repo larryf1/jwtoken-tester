@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,7 +20,7 @@ import (
 	"jwtoken-tester/internal/tokenfactory"
 )
 
-type config struct {
+type serveConfig struct {
 	Listen         string
 	Issuer         string
 	DefaultTTL     time.Duration
@@ -28,13 +30,83 @@ type config struct {
 	Algorithms     string
 }
 
+type printTokenConfig struct {
+	Issuer     string
+	DefaultTTL time.Duration
+	MaxTTL     time.Duration
+	Algorithms string
+	Claims     string
+	Alg        string
+	Headers    string
+}
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "serve":
+		runServe(logger, os.Args[2:])
+	case "print-token":
+		runPrintToken(logger, os.Args[2:])
+	case "help", "-h", "--help":
+		printUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println(`jwtoken-tester - ephemeral JWT/JWKS test issuer
+
+Usage:
+  jwtoken-tester <command> [flags]
+
+Commands:
+  serve         Run the HTTP server (default)
+  print-token   Generate a single JWT and print it to stdout
+  help          Show this help
+
+Examples:
+  jwtoken-tester serve
+  jwtoken-tester serve --listen 0.0.0.0:8080 --issuer https://test.example.com
+  jwtoken-tester print-token --sub user-123 --aud my-service --alg RS256
+  jwtoken-tester print-token --claims '{"sub":"user-1","roles":["admin"]}'`)
+}
+
+func runServe(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+
+	cfg := serveConfig{
+		Listen:         envStr("LISTEN", "127.0.0.1:8080"),
+		Issuer:         envStr("ISSUER", "http://127.0.0.1:8080"),
+		DefaultTTL:     envDur("DEFAULT_TTL", time.Hour),
+		MaxTTL:         envDur("MAX_TTL", 24*time.Hour),
+		RotationPeriod: envDur("ROTATION_INTERVAL", 30*time.Minute),
+		GracePeriod:    envDur("GRACE_PERIOD", 25*time.Hour),
+		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
+	}
+
+	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
+	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "external issuer / base URL (env ISSUER)")
+	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "lifetime when exp omitted (env DEFAULT_TTL)")
+	fs.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
+	fs.DurationVar(&cfg.RotationPeriod, "rotation-interval", cfg.RotationPeriod, "key rotation cadence, 0 disables (env ROTATION_INTERVAL)")
+	fs.DurationVar(&cfg.GracePeriod, "grace-period", cfg.GracePeriod, "retired keys stay published this long (env GRACE_PERIOD)")
+	fs.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable: RS256,ES256,EdDSA (env ALGORITHMS)")
+
+	if err := fs.Parse(args); err != nil {
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	cfg := loadConfig(logger)
 
 	enabledAlgs := parseAlgorithms(cfg.Algorithms)
 	ring, err := keyring.New(cfg.GracePeriod, enabledAlgs)
@@ -77,46 +149,88 @@ func main() {
 	logger.Info("stopped; ephemeral signing keys discarded")
 }
 
-func loadConfig(logger *slog.Logger) config {
-	envStr := func(key, def string) string {
-		if v := os.Getenv(key); v != "" {
-			return v
+func runPrintToken(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("print-token", flag.ExitOnError)
+
+	cfg := printTokenConfig{
+		Issuer:     envStr("ISSUER", "http://127.0.0.1:8080"),
+		DefaultTTL: envDur("DEFAULT_TTL", time.Hour),
+		MaxTTL:     envDur("MAX_TTL", 24*time.Hour),
+		Algorithms: envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
+	}
+
+	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "issuer URL for token (env ISSUER)")
+	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "default token lifetime (env DEFAULT_TTL)")
+	fs.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
+	fs.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable (env ALGORITHMS)")
+	fs.StringVar(&cfg.Claims, "claims", "", `JSON object with custom claims (e.g. '{"sub":"user-1","roles":["admin"]}')`)
+	fs.StringVar(&cfg.Alg, "alg", "RS256", "signing algorithm: RS256, ES256, EdDSA")
+	fs.StringVar(&cfg.Headers, "headers", "", `JSON object with extra JOSE headers`)
+
+	if err := fs.Parse(args); err != nil {
+		return
+	}
+
+	enabledAlgs := parseAlgorithms(cfg.Algorithms)
+	if len(enabledAlgs) == 0 {
+		logger.Error("no algorithms enabled")
+		os.Exit(1)
+	}
+
+	ring, err := keyring.New(cfg.MaxTTL, enabledAlgs)
+	if err != nil {
+		logger.Error("initializing key ring", "error", err)
+		os.Exit(1)
+	}
+
+	factory := tokenfactory.NewFactory(ring, cfg.Issuer, cfg.DefaultTTL, cfg.MaxTTL)
+
+	var claims map[string]any
+	if cfg.Claims != "" {
+		if err := json.Unmarshal([]byte(cfg.Claims), &claims); err != nil {
+			logger.Error("parsing claims", "error", err)
+			os.Exit(1)
 		}
+	}
+
+	var headers map[string]any
+	if cfg.Headers != "" {
+		if err := json.Unmarshal([]byte(cfg.Headers), &headers); err != nil {
+			logger.Error("parsing headers", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	resp, err := factory.Mint(&tokenfactory.Request{
+		Claims:  claims,
+		Alg:     cfg.Alg,
+		Headers: headers,
+	})
+	if err != nil {
+		logger.Error("minting token", "error", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(resp.AccessToken)
+}
+
+func envStr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func envDur(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
 		return def
 	}
-	envDur := func(key string, def time.Duration) time.Duration {
-		v := os.Getenv(key)
-		if v == "" {
-			return def
-		}
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			logger.Warn("ignoring malformed env duration", "key", key, "value", v)
-			return def
-		}
-		return d
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return def
 	}
-
-	cfg := config{
-		Listen:         envStr("LISTEN", "127.0.0.1:8080"),
-		Issuer:         envStr("ISSUER", "http://127.0.0.1:8080"),
-		DefaultTTL:     envDur("DEFAULT_TTL", time.Hour),
-		MaxTTL:         envDur("MAX_TTL", 24*time.Hour),
-		RotationPeriod: envDur("ROTATION_INTERVAL", 30*time.Minute),
-		GracePeriod:    envDur("GRACE_PERIOD", 25*time.Hour),
-		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
-	}
-
-	flag.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
-	flag.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "external issuer / base URL (env ISSUER)")
-	flag.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "lifetime when exp omitted (env DEFAULT_TTL)")
-	flag.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
-	flag.DurationVar(&cfg.RotationPeriod, "rotation-interval", cfg.RotationPeriod, "key rotation cadence, 0 disables (env ROTATION_INTERVAL)")
-	flag.DurationVar(&cfg.GracePeriod, "grace-period", cfg.GracePeriod, "retired keys stay published this long (env GRACE_PERIOD)")
-	flag.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable: RS256,ES256,EdDSA (env ALGORITHMS)")
-	flag.Parse()
-
-	return cfg
+	return d
 }
 
 func parseAlgorithms(s string) []keyring.Algorithm {

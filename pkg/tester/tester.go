@@ -45,23 +45,21 @@ func NewServer(t TestingT, opts ...Option) (*Server, string) {
 		issuer = cfg.issuer
 	}
 
-	// Create factory and server
+	// Create server with a placeholder issuer first to get the URL
 	factory := tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
-	handler := server.New(ring, factory, issuer).Handler()
+	srv := server.New(ring, factory, issuer)
+	handler := srv.Handler()
 
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
+	// If auto-issuer, use the test server's URL as issuer
+	// Update both the internal server's issuer and recreate factory
 	if useAutoIssuer {
 		issuer = ts.URL
-		// Recreate factory and server with correct issuer if needed
-		if issuer != "" {
-			factory = tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
-			handler = server.New(ring, factory, issuer).Handler()
-			ts.Close()
-			ts = httptest.NewServer(handler)
-			t.Cleanup(ts.Close)
-		}
+		srv.Issuer = issuer
+		factory = tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
+		srv.Factory = factory
 	}
 
 	s := &Server{

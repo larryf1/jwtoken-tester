@@ -15,12 +15,12 @@ const maxRequestBody = 1 << 20
 
 type Server struct {
 	ring    keyring.Ring
-	factory *tokenfactory.Factory
-	issuer  string
+	Factory *tokenfactory.Factory
+	Issuer  string
 }
 
 func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string) *Server {
-	return &Server{ring: ring, factory: factory, issuer: issuer}
+	return &Server{ring: ring, Factory: factory, Issuer: issuer}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -88,14 +88,14 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
-	base := strings.TrimSuffix(s.issuer, "/")
+	base := strings.TrimSuffix(s.Issuer, "/")
 	algorithms := s.ring.EnabledAlgorithms()
 	algStrs := make([]string, len(algorithms))
 	for i, alg := range algorithms {
 		algStrs[i] = string(alg)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                s.issuer,
+		"issuer":                                s.Issuer,
 		"jwks_uri":                              base + "/.well-known/jwks.json",
 		"token_endpoint":                        base + "/token",
 		"subject_types_supported":               []string{"public"},
@@ -115,7 +115,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.factory.Mint(&req)
+	resp, err := s.Factory.Mint(&req)
 	if err != nil {
 		switch {
 		case errors.Is(err, tokenfactory.ErrInvalidRequest),

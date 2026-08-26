@@ -104,7 +104,7 @@ func TestNewServerHealthEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -119,7 +119,7 @@ func TestNewServerDiscoveryEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET discovery: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var doc map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
@@ -142,7 +142,7 @@ func TestNewServerTokenEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /token: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -165,7 +165,7 @@ func fetchJWKS(t *testing.T, url string) jwk.Set {
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := readAll(resp.Body)
 	if err != nil {
 		t.Fatalf("read jwks response: %v", err)
@@ -259,7 +259,9 @@ func TestNewServerWithCustomTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetIssuedAt: %v", err)
 	}
-	lifetime := exp.Time.Sub(iat.Time)
+	expTime := (*exp).Time
+	iatTime := (*iat).Time
+	lifetime := expTime.Sub(iatTime)
 	expectedLifetime := customTTL
 	if lifetime < expectedLifetime-time.Second || lifetime > expectedLifetime+time.Second {
 		t.Fatalf("lifetime = %v, want ~%v", lifetime, expectedLifetime)
