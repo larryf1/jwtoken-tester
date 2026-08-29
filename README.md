@@ -175,5 +175,5 @@ internal/server/        HTTP handlers, JWKS, discovery document
 
 - [x] Keyring + `/token` + JWKS + discovery, RS256, validated against golang-jwt
 - [x] ES256 / EdDSA support alongside RS256
-- [ ] Embeddable Go library mode (`httptest` server helper) and CLI one-shot mode
-- [ ] Distroless Docker image + docker-compose example wired to a demo protected service
+- [x] Embeddable Go library mode (`httptest` server helper) and CLI one-shot mode
+- [x] Distroless Docker image + docker-compose example wired to a demo protected service

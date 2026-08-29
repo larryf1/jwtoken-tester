@@ -155,5 +155,5 @@ docker/Dockerfile       distroless build
 - [x] **M1** — Keyring + `/token` + JWKS endpoint, RS256 only, validated against
       golang-jwt in tests
 - [x] **M2** — Discovery doc hardening, ES256/EdDSA, rotation with grace window
-- [ ] **M3** — Library mode (`pkg/tester`) + CLI mode
-- [ ] **M4** — Docker image + docker-compose example wired to a demo protected service
+- [x] **M3** — Library mode (`pkg/tester`) + CLI mode
+- [x] **M4** — Docker image + docker-compose example wired to a demo protected service
