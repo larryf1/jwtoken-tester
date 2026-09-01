@@ -47,7 +47,7 @@ func NewServer(t TestingT, opts ...Option) (*Server, string) {
 
 	// Create server with a placeholder issuer first to get the URL
 	factory := tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
-	srv := server.New(ring, factory, issuer)
+	srv := server.New(ring, factory, issuer, "test-version")
 	handler := srv.Handler()
 
 	ts := httptest.NewServer(handler)

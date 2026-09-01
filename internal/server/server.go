@@ -17,25 +17,34 @@ type Server struct {
 	ring    keyring.Ring
 	Factory *tokenfactory.Factory
 	Issuer  string
+	Version string
 }
 
-func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string) *Server {
-	return &Server{ring: ring, Factory: factory, Issuer: issuer}
+func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string, version string) *Server {
+	return &Server{ring: ring, Factory: factory, Issuer: issuer, Version: version}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("POST /token", s.handleToken)
 	return mux
 }
 
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{
+		"version": s.Version,
+	})
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": "jwtoken-tester",
+		"version": s.Version,
 		"warning": "integration-test token issuer; ephemeral in-memory keys",
 		"endpoints": []string{
 			"GET /healthz",
@@ -49,6 +58,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	doc := map[string]any{
 		"status":  "ok",
+		"version": s.Version,
 		"warning": "test issuer: keys are ephemeral and in-memory; do not use in production",
 	}
 	algorithms := s.ring.EnabledAlgorithms()

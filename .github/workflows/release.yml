@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version type (major, minor, patch) or specific version (e.g., 1.2.3)'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      custom_version:
+        description: 'Custom version (if version type is "custom")'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install semantic-release and conventional-changelog
+        run: |
+          npm ci
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event.inputs.version }}" = "custom" ]; then
+            echo "release_version=${{ github.event.inputs.custom_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "release_type=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run semantic-release
+        id: semantic_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ steps.version.outputs.release_version }}" ]; then
+            # Custom version specified
+            npx semantic-release --release-version="${{ steps.version.outputs.release_version }}"
+          else
+            # Use release type (patch/minor/major)
+            npx semantic-release --release-type="${{ steps.version.outputs.release_type }}"
+          fi
+
+      - name: Verify VERSION file updated
+        run: |
+          if [ -f VERSION ]; then
+            echo "VERSION file content: $(cat VERSION)"
+          else
+            echo "VERSION file not found"
+            exit 1
+          fi
+
+      - name: Verify CHANGELOG.md updated
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            echo "CHANGELOG.md updated"
+            head -50 CHANGELOG.md
+          else
+            echo "CHANGELOG.md not found"
+            exit 1
+          fi

@@ -36,7 +36,7 @@ func newTestServer(t *testing.T, algs ...keyring.Algorithm) (*httptest.Server, *
 		t.Fatalf("keyring.New() error = %v", err)
 	}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	ts := httptest.NewServer(New(ring, factory, testIssuer).Handler())
+	ts := httptest.NewServer(New(ring, factory, testIssuer, "test-version").Handler())
 	t.Cleanup(ts.Close)
 	return ts, ring
 }
@@ -409,7 +409,7 @@ func TestJWKSEndpointHandlesKeyringError(t *testing.T) {
 	ts, ring := newTestServer(t, keyring.AlgRS256)
 	_ = ts
 
-	handler := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer).Handler()
+	handler := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer, "test-version").Handler()
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -455,7 +455,7 @@ func TestTokenEndpointReturns400ForTTLTooLong(t *testing.T) {
 func TestTokenEndpointReturns503WhenNoActiveKey(t *testing.T) {
 	ring := &noActiveKeyRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -469,7 +469,7 @@ func TestTokenEndpointReturns503WhenNoActiveKey(t *testing.T) {
 func TestJWKSEndpointHandlesMarshalError(t *testing.T) {
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
@@ -482,7 +482,7 @@ func TestJWKSEndpointHandlesMarshalError(t *testing.T) {
 func TestHandleTokenErrorPaths(t *testing.T) {
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	tests := []struct {
 		name       string
@@ -567,7 +567,7 @@ func (f *failingJWKSRing) EnabledAlgorithms() []keyring.Algorithm {
 func TestJWKSEndpointHandlesError(t *testing.T) {
 	ring := &failingJWKSRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
@@ -581,7 +581,7 @@ func TestJWKSEndpointHandlesError(t *testing.T) {
 func TestHandleTokenNoActiveKeyReturns503(t *testing.T) {
 	ring := &noActiveKeyRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -623,7 +623,7 @@ func (r *internalErrRing) EnabledAlgorithms() []keyring.Algorithm {
 func TestHandleTokenInternalServerError(t *testing.T) {
 	ring := &internalErrRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -668,7 +668,7 @@ func (f *failingMarshalRing) EnabledAlgorithms() []keyring.Algorithm {
 func TestJWKSEndpointMarshalError(t *testing.T) {
 	ring := &failingMarshalRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer)
+	s := New(ring, factory, testIssuer, "test-version")
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()

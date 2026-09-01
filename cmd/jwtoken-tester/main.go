@@ -20,6 +20,8 @@ import (
 	"jwtoken-tester/internal/tokenfactory"
 )
 
+var Version = "dev"
+
 type serveConfig struct {
 	Listen         string
 	Issuer         string
@@ -93,6 +95,14 @@ func runServe(logger *slog.Logger, args []string) {
 		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
 	}
 
+	versionBytes, err := os.ReadFile("VERSION")
+	if err != nil {
+		logger.Warn("could not read VERSION file", "error", err)
+		Version = "dev"
+	} else {
+		Version = strings.TrimSpace(string(versionBytes))
+	}
+
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
 	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "external issuer / base URL (env ISSUER)")
 	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "lifetime when exp omitted (env DEFAULT_TTL)")
@@ -119,7 +129,7 @@ func runServe(logger *slog.Logger, args []string) {
 	factory := tokenfactory.NewFactory(ring, cfg.Issuer, cfg.DefaultTTL, cfg.MaxTTL)
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           server.New(ring, factory, cfg.Issuer).Handler(),
+		Handler:           server.New(ring, factory, cfg.Issuer, Version).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

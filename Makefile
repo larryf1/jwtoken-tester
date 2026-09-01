@@ -1,6 +1,7 @@
 BINARY := jwtoken-tester
 MAIN_PKG := ./cmd/jwtoken-tester
 BIN_DIR := bin
+VERSION := $(shell cat VERSION 2>/dev/null || echo "dev")
 
 ifeq ($(OS),Windows_NT)
 EXE_SUFFIX := .exe
@@ -13,7 +14,7 @@ endif
 all: lint test build ## Lint, test, then build
 
 build: ## Compile the server binary into bin/
-	go build -trimpath -ldflags "-s -w" -o $(BIN_DIR)/$(BINARY)$(EXE_SUFFIX) $(MAIN_PKG)
+	go build -trimpath -ldflags "-s -w -X main.Version=$(VERSION)" -o $(BIN_DIR)/$(BINARY)$(EXE_SUFFIX) $(MAIN_PKG)
 
 run: build ## Build then run the server
 	$(BIN_DIR)/$(BINARY)$(EXE_SUFFIX)
@@ -86,7 +87,7 @@ tidy: ## Prune and sync module dependencies
 clean: ## Remove build artifacts and test caches
 	go clean -testcache
 	$(RM) -r $(BIN_DIR)
-	$(RM) coverage.out coverage.html
+	$(RM) coverage* cover*
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
