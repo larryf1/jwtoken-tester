@@ -309,9 +309,14 @@ func TestStartRotationRotatesAndPrunes(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	r.StartRotation(ctx, 10*time.Millisecond, logger)
 
-	time.Sleep(200 * time.Millisecond)
-
-	output := buf.String()
+	var output string
+	for i := 0; i < 50; i++ {
+		time.Sleep(50 * time.Millisecond)
+		output = buf.String()
+		if strings.Contains(output, "signing keys rotated") {
+			break
+		}
+	}
 	if !strings.Contains(output, "signing keys rotated") {
 		t.Fatalf("expected log about key rotated, got: %s", output)
 	}
