@@ -17,7 +17,7 @@ build: ## Compile the server binary into bin/
 	go build -trimpath -ldflags "-s -w -X main.Version=$(VERSION)" -o $(BIN_DIR)/$(BINARY)$(EXE_SUFFIX) $(MAIN_PKG)
 
 run: build ## Build then run the server
-	$(BIN_DIR)/$(BINARY)$(EXE_SUFFIX)
+	$(BIN_DIR)/$(BINARY)$(EXE_SUFFIX) serve
 
 # Docker targets
 DOCKER_IMAGE := jwtoken-tester
