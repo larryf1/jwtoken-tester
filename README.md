@@ -26,6 +26,7 @@ of hacking basic-auth shortcuts into your middleware.
 │   GET  /                                     │
 │   GET  /healthz                              │
 │   GET  /.well-known/jwks.json                │
+│   GET  /.well-known/jwks.json/{kid}          │
 │   GET  /.well-known/openid-configuration     │
 │   POST /token        ← mint arbitrary JWTs   │
 └──────────────────────────────────────────────┘
@@ -127,6 +128,14 @@ OIDC-style discovery document advertising `issuer`, `jwks_uri`, `token_endpoint`
 
 The live public key set: active key plus retired keys still inside their grace window,
 each tagged `use=sig`, `alg` (RS256/ES256/EdDSA), and thumbprint-derived `kid`.
+
+### `GET /.well-known/jwks.json/{kid}`
+
+Fetch a single public key from the live key set by its thumbprint-derived `kid`. Returns just
+that key's JWK — the same shape as one entry of the JWKS set — which is handy when a consumer
+needs the exact key that signed a token instead of downloading the whole set. Retired keys still
+inside their grace window are reachable too. An unknown or cleaned-up kid returns `404`; a missing
+`kid` in the path returns `400`.
 
 ### `GET /healthz`
 

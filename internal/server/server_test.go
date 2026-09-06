@@ -129,6 +129,63 @@ func mapAlgorithms(algs []keyring.Algorithm) []string {
 	return result
 }
 
+func TestVersionEndpoint(t *testing.T) {
+	ts, ring := newTestServer(t, keyring.AlgRS256)
+
+	resp, err := http.Get(ts.URL + "/version")
+	if err != nil {
+		t.Fatalf("GET /version: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var doc map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode version: %v", err)
+	}
+	if doc["version"] != "test-version" {
+		t.Fatalf("version = %q, want %q", doc["version"], "test-version")
+	}
+
+	// Also test handler directly
+	s := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer, "test-version")
+	req := httptest.NewRequest(http.MethodGet, "/version", nil)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("direct handler status = %d, want 200", w.Code)
+	}
+}
+
+func TestJWKByKIDEndpointErrors(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{"missing kid", "/.well-known/jwks.json/", http.StatusBadRequest},
+		{"unknown kid", "/.well-known/jwks.json/unknown-kid", http.StatusNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + tt.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", tt.path, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+		})
+	}
+}
+
 func TestJWKSEndpointServesPublicKeys(t *testing.T) {
 	ts, _ := newTestServer(t, keyring.AlgRS256, keyring.AlgES256, keyring.AlgEdDSA)
 	set := fetchJWKS(t, ts.URL+"/.well-known/jwks.json")
@@ -210,6 +267,95 @@ func TestJWKSEndpointServesOKPPublicKeys(t *testing.T) {
 		}
 		if usage, _ := key.KeyUsage(); usage != string(jwk.ForSignature) {
 			t.Fatalf("key %d use = %v, want sig", i, usage)
+		}
+	}
+}
+
+func TestJWKByKIDEndpoint(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256, keyring.AlgES256, keyring.AlgEdDSA)
+	set := fetchJWKS(t, ts.URL+"/.well-known/jwks.json")
+
+	for i := range set.Len() {
+		key, _ := set.Key(i)
+		kid, _ := key.KeyID()
+
+		resp, err := http.Get(ts.URL + "/.well-known/jwks.json/" + kid)
+		if err != nil {
+			t.Fatalf("GET jwk by kid: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		fetchedKey, err := jwk.ParseKey(data)
+		if err != nil {
+			t.Fatalf("jwk.ParseKey: %v", err)
+		}
+
+		fetchedKid, _ := fetchedKey.KeyID()
+		if fetchedKid != kid {
+			t.Fatalf("fetched key kid = %v, want %q", fetchedKid, kid)
+		}
+		if fetchedKey.KeyType() != key.KeyType() {
+			t.Fatalf("fetched key kty = %v, want %v", fetchedKey.KeyType(), key.KeyType())
+		}
+	}
+}
+
+func TestJWKByKIDEndpointNotFound(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	resp, err := http.Get(ts.URL + "/.well-known/jwks.json/nonexistent-kid")
+	if err != nil {
+		t.Fatalf("GET jwk by kid: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestJWKByKIDEndpointMissingKid(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	resp, err := http.Get(ts.URL + "/.well-known/jwks.json/")
+	if err != nil {
+		t.Fatalf("GET jwk by kid: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestJWKByKIDEndpointIncludesRetiredKeys(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	ring.Rotate()
+
+	set := fetchJWKS(t, ts.URL+"/.well-known/jwks.json")
+	for i := range set.Len() {
+		key, _ := set.Key(i)
+		kid, _ := key.KeyID()
+
+		resp, err := http.Get(ts.URL + "/.well-known/jwks.json/" + kid)
+		if err != nil {
+			t.Fatalf("GET jwk by kid: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		fetchedKey, err := jwk.ParseKey(data)
+		if err != nil {
+			t.Fatalf("jwk.ParseKey: %v", err)
+		}
+
+		fetchedKid, _ := fetchedKey.KeyID()
+		if fetchedKid != kid {
+			t.Fatalf("fetched key kid = %v, want %q", fetchedKid, kid)
 		}
 	}
 }
@@ -517,6 +663,10 @@ func (n *noActiveKeyRing) JWKS() (jwk.Set, error) {
 	return jwk.NewSet(), nil
 }
 
+func (n *noActiveKeyRing) JWKByKID(string) (jwk.Key, error) {
+	return nil, keyring.ErrNoActiveKey
+}
+
 func (n *noActiveKeyRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", keyring.ErrNoActiveKey
 }
@@ -546,6 +696,9 @@ func (f *failingJWKSRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", keyring.ErrNoActiveKey
 }
 func (f *failingJWKSRing) JWKS() (jwk.Set, error) {
+	return nil, errors.New("jwks failed")
+}
+func (f *failingJWKSRing) JWKByKID(string) (jwk.Key, error) {
 	return nil, errors.New("jwks failed")
 }
 func (f *failingJWKSRing) Rotate() error {
@@ -610,7 +763,10 @@ func (r *internalErrRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 func (r *internalErrRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", errors.New("unexpected error")
 }
-func (r *internalErrRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
+func (r *internalErrRing) JWKS() (jwk.Set, error) { return jwk.NewSet(), nil }
+func (r *internalErrRing) JWKByKID(string) (jwk.Key, error) {
+	return nil, errors.New("unexpected error")
+}
 func (r *internalErrRing) Rotate() error                                              { return nil }
 func (r *internalErrRing) RotateAt(time.Time) error                                   { return nil }
 func (r *internalErrRing) Prune()                                                     {}
@@ -655,6 +811,9 @@ func (f *failingMarshalRing) JWKS() (jwk.Set, error) {
 		return nil, err
 	}
 	return set, nil
+}
+func (f *failingMarshalRing) JWKByKID(string) (jwk.Key, error) {
+	return nil, errors.New("marshal error")
 }
 func (f *failingMarshalRing) Rotate() error                                              { return nil }
 func (f *failingMarshalRing) RotateAt(time.Time) error                                   { return nil }

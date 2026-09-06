@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
+	mux.HandleFunc("GET /.well-known/jwks.json/", s.handleJWKByKID)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("POST /token", s.handleToken)
 	return mux
@@ -88,6 +89,34 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := json.MarshalIndent(set, "", "  ")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) handleJWKByKID(w http.ResponseWriter, r *http.Request) {
+	// Extract kid from path: /.well-known/jwks.json/<kid>
+	kid := strings.TrimPrefix(r.URL.Path, "/.well-known/jwks.json/")
+	if kid == "" {
+		writeError(w, http.StatusBadRequest, "kid is required")
+		return
+	}
+
+	key, err := s.ring.JWKByKID(kid)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	data, err := json.MarshalIndent(key, "", "  ")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

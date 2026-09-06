@@ -656,3 +656,80 @@ func TestNewRequiresAtLeastOneAlgorithm(t *testing.T) {
 		t.Fatal("expected error when no algorithms enabled")
 	}
 }
+
+func TestJWKByKIDReturnsActiveKey(t *testing.T) {
+	for _, alg := range []Algorithm{AlgRS256, AlgES256, AlgEdDSA} {
+		t.Run(string(alg), func(t *testing.T) {
+			r := newTestRing(t, time.Hour, alg)
+			k, err := r.Signer(alg)
+			if err != nil {
+				t.Fatalf("Signer() error = %v", err)
+			}
+
+			key, err := r.JWKByKID(k.Kid())
+			if err != nil {
+				t.Fatalf("JWKByKID() error = %v", err)
+			}
+			kid, ok := key.KeyID()
+			if !ok || kid != k.Kid() {
+				t.Fatalf("JWKByKID() returned wrong kid: got %q, want %q", kid, k.Kid())
+			}
+		})
+	}
+}
+
+func TestJWKByKIDReturnsRetiredKey(t *testing.T) {
+	for _, alg := range []Algorithm{AlgRS256, AlgES256, AlgEdDSA} {
+		t.Run(string(alg), func(t *testing.T) {
+			r := newTestRing(t, time.Hour, alg)
+			oldKey, err := r.Signer(alg)
+			if err != nil {
+				t.Fatalf("Signer() error = %v", err)
+			}
+
+			now := time.Now()
+			if err := r.RotateAt(now); err != nil {
+				t.Fatalf("RotateAt() error = %v", err)
+			}
+
+			key, err := r.JWKByKID(oldKey.Kid())
+			if err != nil {
+				t.Fatalf("JWKByKID() for retired key error = %v", err)
+			}
+			kid, ok := key.KeyID()
+			if !ok || kid != oldKey.Kid() {
+				t.Fatalf("JWKByKID() returned wrong kid for retired key: got %q, want %q", kid, oldKey.Kid())
+			}
+		})
+	}
+}
+
+func TestJWKByKIDReturnsErrorForUnknownKid(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	_, err := r.JWKByKID("unknown-kid")
+	if err == nil {
+		t.Fatal("expected error for unknown kid")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("error = %v, want 'not found'", err)
+	}
+}
+
+func TestJWKByKIDReturnsErrorWhenNoAlgorithmsEnabled(t *testing.T) {
+	r := &KeyRing{}
+	_, err := r.JWKByKID("any-kid")
+	if err == nil {
+		t.Fatal("expected error when no algorithms enabled")
+	}
+}
+
+func TestJWKSUnlockedReturnsKeys(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256, AlgES256)
+	set, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if set.Len() != 2 {
+		t.Fatalf("JWKS length = %d, want 2", set.Len())
+	}
+}

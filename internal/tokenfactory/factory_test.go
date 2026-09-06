@@ -351,6 +351,7 @@ type failingSignerRing struct {
 func (f *failingSignerRing) Signer(keyring.Algorithm) (*keyring.Key, error)             { return nil, f.err }
 func (f *failingSignerRing) ActiveKid(keyring.Algorithm) (string, error)                { return "", f.err }
 func (f *failingSignerRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
+func (f *failingSignerRing) JWKByKID(string) (jwk.Key, error)                           { return nil, f.err }
 func (f *failingSignerRing) Rotate() error                                              { return nil }
 func (f *failingSignerRing) RotateAt(time.Time) error                                   { return nil }
 func (f *failingSignerRing) Prune()                                                     {}
@@ -530,6 +531,7 @@ type failingSignRing struct {
 func (f *failingSignRing) Signer(keyring.Algorithm) (*keyring.Key, error)             { return nil, f.err }
 func (f *failingSignRing) ActiveKid(keyring.Algorithm) (string, error)                { return "", f.err }
 func (f *failingSignRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
+func (f *failingSignRing) JWKByKID(string) (jwk.Key, error)                           { return nil, f.err }
 func (f *failingSignRing) Rotate() error                                              { return nil }
 func (f *failingSignRing) RotateAt(time.Time) error                                   { return nil }
 func (f *failingSignRing) Prune()                                                     {}

@@ -20,8 +20,7 @@ import (
 )
 
 const (
-	rsaBits    = 2048
-	ecdsaCurve = "P-256"
+	rsaBits = 2048
 )
 
 var (
@@ -79,6 +78,7 @@ type Ring interface {
 	Signer(alg Algorithm) (*Key, error)
 	ActiveKid(alg Algorithm) (string, error)
 	JWKS() (jwk.Set, error)
+	JWKByKID(kid string) (jwk.Key, error)
 	Rotate() error
 	RotateAt(now time.Time) error
 	Prune()
@@ -189,27 +189,6 @@ func (r *KeyRing) ActiveKid(alg Algorithm) (string, error) {
 	return k.Kid(), nil
 }
 
-func (r *KeyRing) JWKS() (jwk.Set, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	set := jwk.NewSet()
-	for _, k := range r.active {
-		if k != nil {
-			if err := set.AddKey(k.PubJWK); err != nil {
-				return nil, err
-			}
-		}
-	}
-	for _, keys := range r.retired {
-		for _, k := range keys {
-			if err := set.AddKey(k.PubJWK); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return set, nil
-}
-
 func (r *KeyRing) Rotate() error {
 	return r.RotateAt(time.Now())
 }
@@ -285,6 +264,45 @@ func (r *KeyRing) StartRotation(ctx context.Context, interval time.Duration, log
 			}
 		}
 	}()
+}
+
+func (r *KeyRing) JWKByKID(kid string) (jwk.Key, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	set, err := r.jwksUnlocked()
+	if err != nil {
+		return nil, err
+	}
+	key, ok := set.LookupKeyID(kid)
+	if !ok {
+		return nil, fmt.Errorf("keyring: key with kid %q not found", kid)
+	}
+	return key, nil
+}
+
+func (r *KeyRing) jwksUnlocked() (jwk.Set, error) {
+	set := jwk.NewSet()
+	for _, k := range r.active {
+		if k != nil {
+			if err := set.AddKey(k.PubJWK); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, keys := range r.retired {
+		for _, k := range keys {
+			if err := set.AddKey(k.PubJWK); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return set, nil
+}
+
+func (r *KeyRing) JWKS() (jwk.Set, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.jwksUnlocked()
 }
 
 func (r *KeyRing) EnabledAlgorithms() []Algorithm {
