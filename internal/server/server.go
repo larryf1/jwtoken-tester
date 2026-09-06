@@ -4,11 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/http"
-	"strings"
-
 	"jwtoken-tester/internal/keyring"
 	"jwtoken-tester/internal/tokenfactory"
+	"net/http"
+	"strings"
 )
 
 const maxRequestBody = 1 << 20
@@ -50,6 +49,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"endpoints": []string{
 			"GET /healthz",
 			"GET /.well-known/jwks.json",
+			"GET /.well-known/jwks.json/{kid}",
 			"GET /.well-known/openid-configuration",
 			"POST /token",
 		},

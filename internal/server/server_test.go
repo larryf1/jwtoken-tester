@@ -331,7 +331,9 @@ func TestJWKByKIDEndpointMissingKid(t *testing.T) {
 func TestJWKByKIDEndpointIncludesRetiredKeys(t *testing.T) {
 	ts, _ := newTestServer(t, keyring.AlgRS256)
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
-	ring.Rotate()
+	if err := ring.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
 
 	set := fetchJWKS(t, ts.URL+"/.well-known/jwks.json")
 	for i := range set.Len() {
