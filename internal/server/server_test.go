@@ -20,8 +20,8 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
-	"jwtoken-tester/internal/keyring"
-	"jwtoken-tester/internal/tokenfactory"
+	"github.com/larryf1/jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
 )
 
 const testIssuer = "http://127.0.0.1:8080"

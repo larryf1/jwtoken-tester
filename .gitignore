@@ -1,6 +1,9 @@
 /.idea/
 /jwtoken-tester.iml
 /bin/
+/dist/
+*.exe
+*.exe~
 /coverage.out
 /cover
 /coverage

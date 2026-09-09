@@ -62,10 +62,10 @@ jobs:
         run: |
           if [ -n "${{ steps.version.outputs.release_version }}" ]; then
             # Custom version specified
-            npx semantic-release --release-version="${{ steps.version.outputs.release_version }}"
+            npx semantic-release --release-as="${{ steps.version.outputs.release_version }}"
           else
             # Use release type (patch/minor/major)
-            npx semantic-release --release-type="${{ steps.version.outputs.release_type }}"
+            npx semantic-release --release-as="${{ steps.version.outputs.release_type }}"
           fi
 
       - name: Verify VERSION file updated

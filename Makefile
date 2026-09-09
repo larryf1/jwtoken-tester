@@ -46,7 +46,7 @@ test: ## Run all unit tests
 	go test ./...
 
 COVERAGE_THRESHOLD ?= 90
-COVER_PKGS := jwtoken-tester/internal/keyring jwtoken-tester/internal/server jwtoken-tester/internal/tokenfactory
+COVER_PKGS := github.com/larryf1/jwtoken-tester/internal/keyring github.com/larryf1/jwtoken-tester/internal/server github.com/larryf1/jwtoken-tester/internal/tokenfactory
 COVER_PROFILE := coverage.out
 
 coverage: ## Run tests and print total coverage percentage

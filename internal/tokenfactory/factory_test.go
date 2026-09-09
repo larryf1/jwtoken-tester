@@ -17,7 +17,7 @@ import (
 	jwt5 "github.com/golang-jwt/jwt/v5"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 
-	"jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/internal/keyring"
 )
 
 const testIssuer = "https://issuer.test.example"

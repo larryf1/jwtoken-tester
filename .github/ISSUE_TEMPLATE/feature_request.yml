@@ -1,0 +1,19 @@
+---
+name: Feature request
+about: Suggest a new capability for jwtoken-tester
+title: ''
+labels: enhancement
+assignees: ''
+---
+
+**Problem**
+What problem or gap are you trying to solve? (e.g. "I want to simulate a refresh-token flow for a negative test").
+
+**Proposed solution**
+Describe the behavior you would like, ideally with an example request/response or config change.
+
+**Alternatives considered**
+Any workarounds you already tried.
+
+**Additional context**
+Anything else — links, references to other tools (e.g. Keycloak, mock-oidc), or use cases.

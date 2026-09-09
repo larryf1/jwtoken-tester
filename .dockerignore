@@ -1,0 +1,17 @@
+.git
+.gitignore
+.idea
+.github
+.vscode
+bin
+dist
+coverage
+coverage.out
+coverage.html
+coverage.dat
+coverage_tf
+*.exe
+*.exe~
+*.test
+*.log
+**/.DS_Store

@@ -1,0 +1,10 @@
+# CODEOWNERS — every PR requires these approvals.
+# See https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default reviewers for everything
+* @larryf1
+
+# Sensitive areas require the owner's explicit review
+.github/workflows/ @larryf1
+internal/keyring/  @larryf1
+SECURITY.md        @larryf1

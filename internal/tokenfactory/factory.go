@@ -11,7 +11,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
-	"jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/internal/keyring"
 )
 
 var (

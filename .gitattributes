@@ -1,0 +1,11 @@
+# Normalize line endings; LF everywhere except on Windows checkout where text stays LF.
+* text=auto eol=lf
+
+# Binary artifacts must never be normalized
+*.exe   binary
+*.exe~  binary
+*.zip   binary
+*.tar.gz binary
+*.png   binary
+*.jpg   binary
+*.ico   binary

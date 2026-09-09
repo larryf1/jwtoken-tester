@@ -1,0 +1,29 @@
+---
+name: Bug report
+about: Report a problem with jwtoken-tester
+title: ''
+labels: bug
+assignees: ''
+---
+
+**Describe the bug**
+A clear and concise description of what is not working.
+
+**To reproduce**
+Steps to reproduce the behavior, e.g. the exact curl / config / test-helper snippet:
+
+```sh
+curl -s http://127.0.0.1:8080/token -d '{"claims":{...}}'
+```
+
+**Expected behavior**
+What you expected to happen instead.
+
+**Environment**
+- jwtoken-tester version (or commit): 
+- Go version (if run from source): 
+- OS / platform: 
+- How it was run (binary, `go run`, Docker): 
+
+**Additional context**
+Anything else relevant — logs, JWKS output, JWT library used by the service under test.

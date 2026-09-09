@@ -15,9 +15,9 @@ import (
 	"syscall"
 	"time"
 
-	"jwtoken-tester/internal/keyring"
-	"jwtoken-tester/internal/server"
-	"jwtoken-tester/internal/tokenfactory"
+	"github.com/larryf1/jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/internal/server"
+	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
 )
 
 var Version = "dev"

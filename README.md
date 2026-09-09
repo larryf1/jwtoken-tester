@@ -1,5 +1,10 @@
 # jwtoken-tester
 
+[![CI](https://github.com/larryf1/jwtoken-tester/actions/workflows/ci.yml/badge.svg)](https://github.com/larryf1/jwtoken-tester/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/badge/Go-1.27%2B-blue?logo=go&logoColor=white)](https://go.dev/dl/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Latest Release](https://img.shields.io/github/v/release/larryf1/jwtoken-tester?sort=semver)](https://github.com/larryf1/jwtoken-tester/releases)
+
 An **ephemeral JWT/JWKS issuer** for integration-testing JWT-aware services.
 
 It behaves like a tiny OpenID Connect-style identity provider whose public keys your app can
@@ -47,6 +52,23 @@ thumbprint of its public JWK, so JWKS consumers can match keys without special-c
    published in the JWKS for `GRACE_PERIOD` so outstanding tokens keep validating, then it is
    zeroized in memory and dropped from the set.
 3. Set `ROTATION_INTERVAL=0` when tests need long-lived key stability.
+
+## Installation
+
+Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are attached to
+every [release](https://github.com/larryf1/jwtoken-tester/releases). Or install
+from source (Go 1.27+):
+
+```sh
+go install github.com/larryf1/jwtoken-tester/cmd/jwtoken-tester@latest
+```
+
+A released Docker image is also published:
+
+```sh
+docker pull gcr.io/larryf1/jwtoken-tester:latest
+docker run --rm -p 8080:8080 gcr.io/larryf1/jwtoken-tester
+```
 
 ## Quick start
 

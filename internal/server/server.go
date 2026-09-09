@@ -3,9 +3,9 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"github.com/larryf1/jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
 	"io"
-	"jwtoken-tester/internal/keyring"
-	"jwtoken-tester/internal/tokenfactory"
 	"net/http"
 	"strings"
 )

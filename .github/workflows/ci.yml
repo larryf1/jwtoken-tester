@@ -6,8 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  build-test-coverage:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -18,11 +21,48 @@ jobs:
         with:
           go-version: '1.27'
 
-      - name: Run make build
-        run: make build
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
 
-      - name: Run make test
-        run: make test
+      - name: Run make lint
+        run: make lint
 
-      - name: Run make coverage
-        run: make coverage
+  build-test:
+    name: build-test (${{ matrix.os }} / go ${{ matrix.go-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go-version: ['1.27', 'stable']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
+
+  coverage:
+    needs: [lint, build-test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+
+      - name: Run make coverage-check (threshold 90%)
+        run: make coverage-check
