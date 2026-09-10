@@ -37,7 +37,10 @@ never touch disk, env vars, logs, or HTTP responses.
 ## Conventional commits
 
 Release automation (`semantic-release`) derives versions and the changelog from
-commit messages, so:
+commit messages, so the format is **enforced, not just requested**: the PR CI
+job `commitlint` rejects any commit that does not follow the
+[Conventional Commits](https://www.conventionalcommits.org/) spec (run it
+locally with `npx commitlint --from origin/main --to HEAD`).
 
 ```
 feat(server): add X
@@ -45,17 +48,34 @@ fix(keyring): correct rotation edge case
 docs(readme): clarify TTL parsing
 ```
 
-Type keywords that cut a release: `feat` and `fix`. `docs`, `chore`, `refactor`,
-`test` do not. Put `BREAKING CHANGE:` in the body when a change is breaking.
+Type keywords that cut a release: `feat` → minor, `fix` → patch. `docs`,
+`chore`, `refactor`, `test` do not. Put `BREAKING CHANGE:` in the body when a
+change is breaking (→ major).
+
+## Releases
+
+Releases are cut automatically from `main` by `semantic-release`. Versions are
+calculated from the merged conventional commits:
+
+- `feat` → **minor** (e.g. `1.0.0` → `1.1.0`)
+- `fix` → **patch** (e.g. `1.0.0` → `1.0.1`)
+- `BREAKING CHANGE:` → **major** (e.g. `1.0.0` → `2.0.0`)
+
+There is no manual version number step — the version is always derived. To cut
+a release, run the [Release](.github/workflows/release.yml) workflow
+(interactively, or with `gh workflow run release.yml`). It bumps the version in
+`VERSION`/`package.json`, updates `CHANGELOG.md`, tags the commit, pushes, and
+publishes binaries + the Docker image. Releases from the tag push flow through
+the [Publish](.github/workflows/publish.yml) workflow.
 
 ## Developer Certificate of Origin (DCO)
 
 By contributing you certify that you wrote the code (or have the right to submit
-it) under the [MIT license](LICENSE) — the [Developer Certificate of Origin,
-version 1.1](https://developercertificate.org/). Sign off every commit with
-`git commit -s` (adds a `Signed-off-by:` trailer with your name and email).
-Commits without the trailer will be rejected. (Internal CI checks for the
-trailer on all branches that gate merges to `main`.)
+it) under the [MIT license](LICENSE) — the
+[Developer Certificate of Origin, version 1.1](https://developercertificate.org/).
+Sign off every commit with `git commit -s` (adds a `Signed-off-by:` trailer with
+your name and email). The PR CI job `dco` rejects the PR unless **every** commit
+carries the trailer.
 
 ## Before you open a PR
 

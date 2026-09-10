@@ -70,6 +70,15 @@ docker pull gcr.io/larryf1/jwtoken-tester:latest
 docker run --rm -p 8080:8080 gcr.io/larryf1/jwtoken-tester
 ```
 
+## Releases
+
+Versions are derived automatically from [Conventional Commits](https://www.conventionalcommits.org/)
+and cut with [`semantic-release`](https://semantic-release.gitbook.io/): `feat` →
+minor, `fix` → patch, `BREAKING CHANGE:` → major. Every PR merge to `main` is
+gated by CI that enforces the commit format (`commitlint`) and the DCO
+`Signed-off-by:` trailer. To cut a release, run the *Release* workflow — there is
+no manual version to pick; the bump is computed from the merged history.
+
 ## Quick start
 
 Requires Go 1.27+.

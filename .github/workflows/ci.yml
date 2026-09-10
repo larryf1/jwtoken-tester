@@ -66,3 +66,47 @@ jobs:
 
       - name: Run make coverage-check (threshold 90%)
         run: make coverage-check
+
+  commitlint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint commit messages
+        run: npx commitlint --from "${{ github.event.pull_request.base.sha }}" --to "${{ github.event.pull_request.head.sha }}"
+
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check Signed-off-by trailer on all commits
+        run: |
+          set -euo pipefail
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          for sha in $(git rev-list "$BASE".."$HEAD"); do
+            if ! git show -s --format=%B "$sha" | grep -q '^Signed-off-by:'; then
+              echo "ERROR: commit $sha is missing a 'Signed-off-by:' trailer"
+              git show -s --format='%h %s' "$sha"
+              exit 1
+            fi
+          done
+          echo "All commits are signed off."
