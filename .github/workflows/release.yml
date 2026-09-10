@@ -58,7 +58,7 @@ jobs:
       - name: Run semantic-release
         id: semantic_release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           if [ -n "${{ steps.version.outputs.release_version }}" ]; then
             # Custom version specified
