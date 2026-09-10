@@ -1,6 +1,6 @@
 {
   "name": "jwtoken-tester",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "JWT Token Tester",
   "private": true,
   "scripts": {
@@ -16,7 +16,9 @@
     "conventional-changelog-cli": "^5.0.0"
   },
   "release": {
-    "branches": ["main"],
+    "branches": [
+      "main"
+    ],
     "plugins": [
       "@semantic-release/commit-analyzer",
       "@semantic-release/release-notes-generator",
