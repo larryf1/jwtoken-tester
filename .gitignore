@@ -1,5 +1,6 @@
 /.idea/
 /jwtoken-tester.iml
+/node_modules/
 /bin/
 /dist/
 *.exe
