@@ -1,6 +1,6 @@
 {
   "name": "jwtoken-tester",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "JWT Token Tester",
   "private": true,
   "scripts": {

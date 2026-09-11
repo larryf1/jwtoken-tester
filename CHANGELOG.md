@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/larryf1/jwtoken-tester/compare/v1.0.1...v1.1.0) (2026-09-11)
+
+
+### Features
+
+* **docker:** enhance Dockerfile to include versioning and OCI labels for better metadata ([1e6f74b](https://github.com/larryf1/jwtoken-tester/commit/1e6f74b8355602827f256046411535deb90369e4))
+
 ## [1.0.1](https://github.com/larryf1/jwtoken-tester/compare/v1.0.0...v1.0.1) (2026-09-11)
 
 
