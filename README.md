@@ -79,6 +79,38 @@ gated by CI that enforces the commit format (`commitlint`) and the DCO
 `Signed-off-by:` trailer. To cut a release, run the *Release* workflow — there is
 no manual version to pick; the bump is computed from the merged history.
 
+### Versioning
+
+A version is always a plain, unambiguous version number derived from git,
+following the [`git describe`][git-describe] scheme:
+
+- **Release** — a tag `vX.Y.Z` on the release commit produces the exact
+  version `X.Y.Z` (the `v` prefix is stripped). Every artifact (binary, Docker
+  image, GitHub Release) is tagged with just `X.Y.Z`.
+- **Development build** — a build from any non-tag ref (e.g. a manual
+  *Publish* run on `main`) is labeled
+  `X.Y.Z-<n>-<short-sha>`, where `X.Y.Z` is the most recent reachable release
+  tag, `<n>` is the number of commits since that tag, and `<short-sha>` is the
+  7-character abbreviated commit SHA (the leading `g` that `git describe`
+  emits is stripped). If no release tag exists yet, the base is `0.0.0`.
+
+  | Source ref | Image tag |
+  |-----------|-----------|
+  | tag `v1.2.3` | `1.2.3` |
+  | `main`, 5 commits after `v1.2.3` | `1.2.3-5-4fa184e` |
+  | no tags yet | `0.0.0-<n>-<short-sha>` |
+
+The image is published to
+[`ghcr.io/larryf1/jwtoken-tester`](https://github.com/larryf1/jwtoken-tester/pkgs/container/jwtoken-tester);
+only a tag-pushed release is additionally tagged `latest`.
+
+`make build` and `make run` use the exact same scheme: the version is derived
+from `git describe` and baked into the binary via `-ldflags "-X main.Version=…"`.
+Running the binary through `go run` (no build flags) falls back to the `VERSION`
+file written by semantic-release, else `dev`.
+
+[git-describe]: https://git-scm.com/docs/git-describe
+
 ## Quick start
 
 Requires Go 1.27+.

@@ -1,7 +1,15 @@
 BINARY := jwtoken-tester
 MAIN_PKG := ./cmd/jwtoken-tester
 BIN_DIR := bin
-VERSION := $(shell cat VERSION 2>/dev/null || echo "dev")
+# Same scheme as .github/workflows/publish.yml: release tag vX.Y.Z -> X.Y.Z,
+# otherwise git describe "$X.Y.Z-<n>-<short-sha>" (leading "v" and "g" stripped).
+VERSION := $(shell \
+	describe=$$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null); \
+	if [ -n "$$describe" ]; then \
+		printf '%s' "$$describe" | sed -e 's/^v//' -e 's/-g/-/'; \
+	else \
+		printf '0.0.0-%s-%s' "$$(git rev-list --count HEAD)" "$$(git rev-parse --short=7 HEAD)"; \
+	fi)
 
 ifeq ($(OS),Windows_NT)
 EXE_SUFFIX := .exe

@@ -44,6 +44,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -66,7 +68,14 @@ jobs:
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             VERSION=${GITHUB_REF#refs/tags/v}
           else
-            VERSION="dev.${GITHUB_SHA::7}"
+            DESCRIBE=$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null) || true
+            if [[ -n "$DESCRIBE" ]]; then
+              VERSION="${DESCRIBE#v}"
+              VERSION="${VERSION//-g/-}"
+            else
+              COUNT=$(git rev-list --count HEAD)
+              VERSION="0.0.0-${COUNT}-g${GITHUB_SHA::7}"
+            fi
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 

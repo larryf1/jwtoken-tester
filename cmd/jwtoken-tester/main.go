@@ -58,7 +58,10 @@ func main() {
 	case "help", "-h", "--help":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		_, err := fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		if err != nil {
+			return
+		}
 		printUsage()
 		os.Exit(1)
 	}
@@ -95,12 +98,10 @@ func runServe(logger *slog.Logger, args []string) {
 		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
 	}
 
-	versionBytes, err := os.ReadFile("VERSION")
-	if err != nil {
-		logger.Warn("could not read VERSION file", "error", err)
-		Version = "dev"
-	} else {
-		Version = strings.TrimSpace(string(versionBytes))
+	if Version == "dev" {
+		if versionBytes, err := os.ReadFile("VERSION"); err == nil {
+			Version = strings.TrimSpace(string(versionBytes))
+		}
 	}
 
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
