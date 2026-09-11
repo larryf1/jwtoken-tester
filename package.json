@@ -13,7 +13,6 @@
     "@semantic-release/changelog": "^7.0.0",
     "@semantic-release/exec": "^7.1.0",
     "@semantic-release/git": "^11.0.1",
-    "@semantic-release/github": "^12.0.9",
     "conventional-changelog-cli": "^5.0.0"
   },
   "release": {
@@ -28,7 +27,7 @@
       [
         "@semantic-release/exec",
         {
-          "prepareCmd": "echo ${nextRelease.version} > VERSION"
+          "prepareCmd": "echo ${nextRelease.version} > VERSION && echo ${nextRelease.version} > .release-version"
         }
       ],
       [
@@ -37,8 +36,7 @@
           "assets": ["CHANGELOG.md", "VERSION", "package.json", "package-lock.json"],
           "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
         }
-      ],
-      "@semantic-release/github"
+      ]
     ]
   }
 }

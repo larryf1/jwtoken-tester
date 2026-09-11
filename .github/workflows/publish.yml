@@ -1,44 +1,16 @@
-name: Publish
+name: Publish (dev build)
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
-  contents: write
   packages: write
-  id-token: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: jwtoken-tester
 
 jobs:
-  binaries:
-    if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -47,13 +19,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.27'
-
-      - name: Build binary
-        run: make build
+      - name: Extract version
+        id: version
+        run: |
+          DESCRIBE=$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null) || true
+          if [[ -n "$DESCRIBE" ]]; then
+            VERSION="${DESCRIBE#v}"
+            VERSION="${VERSION//-g/-}"
+          else
+            COUNT=$(git rev-list --count HEAD)
+            VERSION="0.0.0-${COUNT}-g${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -62,35 +39,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            VERSION=${GITHUB_REF#refs/tags/v}
-          else
-            DESCRIBE=$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null) || true
-            if [[ -n "$DESCRIBE" ]]; then
-              VERSION="${DESCRIBE#v}"
-              VERSION="${VERSION//-g/-}"
-            else
-              COUNT=$(git rev-list --count HEAD)
-              VERSION="0.0.0-${COUNT}-g${GITHUB_SHA::7}"
-            fi
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
       - name: Build and push Docker image
         run: |
-          IMAGE_TAG="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
-          docker build -f docker/Dockerfile -t "$IMAGE_TAG" .
-          docker push "$IMAGE_TAG"
-          echo "Pushed $IMAGE_TAG"
-
-      - name: Tag as latest
-        if: github.ref_type == 'tag'
-        run: |
-          IMAGE_TAG="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
-          LATEST_TAG="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:latest"
-          docker tag "$IMAGE_TAG" "$LATEST_TAG"
-          docker push "$LATEST_TAG"
-          echo "Tagged and pushed as latest"
+          IMAGE="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}"
+          docker build \
+            --build-arg VERSION=${{ steps.version.outputs.version }} \
+            --build-arg REVISION=${{ github.sha }} \
+            --build-arg CREATED=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            -f docker/Dockerfile \
+            -t "$IMAGE:${{ steps.version.outputs.version }}" .
+          docker push "$IMAGE:${{ steps.version.outputs.version }}"
+          echo "Pushed $IMAGE:${{ steps.version.outputs.version }}"

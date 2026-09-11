@@ -76,8 +76,16 @@ Versions are derived automatically from [Conventional Commits](https://www.conve
 and cut with [`semantic-release`](https://semantic-release.gitbook.io/): `feat` →
 minor, `fix` → patch, `BREAKING CHANGE:` → major. Every PR merge to `main` is
 gated by CI that enforces the commit format (`commitlint`) and the DCO
-`Signed-off-by:` trailer. To cut a release, run the *Release* workflow — there is
-no manual version to pick; the bump is computed from the merged history.
+`Signed-off-by:` trailer. There is no manual version to pick.
+
+The **Release** workflow does everything in one manual run:
+1. `semantic-release` analyzes the history, bumps the version, updates
+   `CHANGELOG.md`/`VERSION`, and pushes the `vX.Y.Z` tag.
+2. GoReleaser builds the release binaries and creates the GitHub Release.
+3. The Docker image is built and pushed to GHCR as `X.Y.Z` and `latest`.
+
+The **Publish (dev build)** workflow is for ad-hoc image pushes from any
+branch; it uses the development-build version scheme below.
 
 ### Versioning
 
@@ -102,7 +110,11 @@ following the [`git describe`][git-describe] scheme:
 
 The image is published to
 [`ghcr.io/larryf1/jwtoken-tester`](https://github.com/larryf1/jwtoken-tester/pkgs/container/jwtoken-tester);
-only a tag-pushed release is additionally tagged `latest`.
+the **Release** workflow also tags the release image `latest`.
+
+Images carry OCI label metadata ([`org.opencontainers.image.*`][oci-labels])
+— `version`, `revision` (commit SHA), `source`, and `created` — so the exact
+code a container runs is inspectable with `docker inspect`.
 
 `make build` and `make run` use the exact same scheme: the version is derived
 from `git describe` and baked into the binary via `-ldflags "-X main.Version=…"`.
@@ -110,6 +122,7 @@ Running the binary through `go run` (no build flags) falls back to the `VERSION`
 file written by semantic-release, else `dev`.
 
 [git-describe]: https://git-scm.com/docs/git-describe
+[oci-labels]: https://github.com/opencontainers/image-spec/blob/main/annotations.md#pre-defined-annotation-keys
 
 ## Quick start
 
