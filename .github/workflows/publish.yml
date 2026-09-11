@@ -63,11 +63,14 @@ jobs:
       - name: Configure Docker for GCR
         run: gcloud auth configure-docker --quiet
 
-      - name: Extract version from tag
+      - name: Extract version
         id: version
         run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION="dev.${GITHUB_SHA::7}"
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
@@ -78,6 +81,7 @@ jobs:
           echo "Pushed $IMAGE_TAG"
 
       - name: Tag as latest
+        if: github.ref_type == 'tag'
         run: |
           IMAGE_TAG="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
           LATEST_TAG="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:latest"
