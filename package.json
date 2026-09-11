@@ -1,6 +1,6 @@
 {
   "name": "jwtoken-tester",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "JWT Token Tester",
   "private": true,
   "scripts": {
@@ -33,7 +33,12 @@
       [
         "@semantic-release/git",
         {
-          "assets": ["CHANGELOG.md", "VERSION", "package.json", "package-lock.json"],
+          "assets": [
+            "CHANGELOG.md",
+            "VERSION",
+            "package.json",
+            "package-lock.json"
+          ],
           "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
         }
       ]

@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/larryf1/jwtoken-tester/compare/v1.0.0...v1.0.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* **versioning:** enhance versioning logic to use git describe for builds and update README with versioning details ([d3bb03a](https://github.com/larryf1/jwtoken-tester/commit/d3bb03aaf351b05938bfafe4f6663951ab81df8d))
+
 # 1.0.0 (2026-09-10)
 
 
