@@ -66,8 +66,8 @@ go install github.com/larryf1/jwtoken-tester/cmd/jwtoken-tester@latest
 A released Docker image is also published:
 
 ```sh
-docker pull gcr.io/larryf1/jwtoken-tester:latest
-docker run --rm -p 8080:8080 gcr.io/larryf1/jwtoken-tester
+docker pull ghcr.io/larryf1/jwtoken-tester:latest
+docker run --rm -p 8080:8080 ghcr.io/larryf1/jwtoken-tester
 ```
 
 ## Releases

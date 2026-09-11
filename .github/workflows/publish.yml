@@ -8,15 +8,16 @@ on:
 
 permissions:
   contents: write
+  packages: write
   id-token: write
 
 env:
-  REGISTRY: gcr.io
-  PROJECT_ID: larryf1
+  REGISTRY: ghcr.io
   IMAGE_NAME: jwtoken-tester
 
 jobs:
   binaries:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -52,16 +53,12 @@ jobs:
       - name: Build binary
         run: make build
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker --quiet
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract version
         id: version
@@ -75,7 +72,7 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
+          IMAGE_TAG="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
           docker build -f docker/Dockerfile -t "$IMAGE_TAG" .
           docker push "$IMAGE_TAG"
           echo "Pushed $IMAGE_TAG"
@@ -83,8 +80,8 @@ jobs:
       - name: Tag as latest
         if: github.ref_type == 'tag'
         run: |
-          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
-          LATEST_TAG="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.IMAGE_NAME }}:latest"
+          IMAGE_TAG="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
+          LATEST_TAG="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:latest"
           docker tag "$IMAGE_TAG" "$LATEST_TAG"
           docker push "$LATEST_TAG"
           echo "Tagged and pushed as latest"
