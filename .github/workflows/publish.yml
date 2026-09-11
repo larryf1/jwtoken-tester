@@ -53,18 +53,15 @@ jobs:
         run: make build
 
       - name: Authenticate to Google Cloud
-        id: auth
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-          token_format: access_token
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: Log in to GCR
-        run: |
-          echo "${{ steps.auth.outputs.access_token }}" | docker login -u oauth2accesstoken --password-stdin ${{ env.REGISTRY }}
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
 
       - name: Extract version from tag
         id: version
