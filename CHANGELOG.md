@@ -1,3 +1,11 @@
+# [1.2.0](https://github.com/larryf1/jwtoken-tester/compare/v1.1.0...v1.2.0) (2026-09-12)
+
+
+### Features
+
+* **rate-limiting:** add configurable rate limiting parameters and request ID handling ([6342fe0](https://github.com/larryf1/jwtoken-tester/commit/6342fe097fd71d7a4adf1419411c1f89ee7ed4f7))
+* **security:** implement rate limiting and security headers in server ([81a0fb8](https://github.com/larryf1/jwtoken-tester/commit/81a0fb8bd98716062bf488599a31f0ff31ac4a24))
+
 # [1.1.0](https://github.com/larryf1/jwtoken-tester/compare/v1.0.1...v1.1.0) (2026-09-11)
 
 

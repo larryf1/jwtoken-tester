@@ -5,7 +5,7 @@ info:
     Ephemeral JWT/JWKS test issuer for integration testing JWT-aware services.
     This is a **test tool only** - not a production IdP. Keys are generated in-memory
     and discarded on shutdown. No TLS is implemented; terminate TLS at a reverse proxy.
-  version: "1.1.0-1-81a0fb8"
+  version: "1.2.0"
   contact:
     name: jwtoken-tester
     url: https://github.com/larryf1/jwtoken-tester
