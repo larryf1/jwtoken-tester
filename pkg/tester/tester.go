@@ -47,7 +47,7 @@ func NewServer(t TestingT, opts ...Option) (*Server, string) {
 
 	// Create server with a placeholder issuer first to get the URL
 	factory := tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
-	srv := server.New(ring, factory, issuer, "test-version")
+	srv := server.New(ring, factory, issuer, "test-version", cfg.rateLimitRPS, cfg.rateLimitBurst)
 	handler := srv.Handler()
 
 	ts := httptest.NewServer(handler)
@@ -110,6 +110,8 @@ type config struct {
 	rotationInterval time.Duration
 	gracePeriod      time.Duration
 	algorithms       []keyring.Algorithm
+	rateLimitRPS     float64
+	rateLimitBurst   int
 }
 
 func defaultConfig() *config {
@@ -120,6 +122,8 @@ func defaultConfig() *config {
 		rotationInterval: 0,
 		gracePeriod:      25 * time.Hour,
 		algorithms:       []keyring.Algorithm{keyring.AlgRS256, keyring.AlgES256, keyring.AlgEdDSA},
+		rateLimitRPS:     100,
+		rateLimitBurst:   200,
 	}
 }
 
@@ -158,5 +162,12 @@ func WithGracePeriod(grace time.Duration) Option {
 func WithAlgorithms(algs ...keyring.Algorithm) Option {
 	return func(c *config) {
 		c.algorithms = algs
+	}
+}
+
+func WithRateLimit(rps float64, burst int) Option {
+	return func(c *config) {
+		c.rateLimitRPS = rps
+		c.rateLimitBurst = burst
 	}
 }

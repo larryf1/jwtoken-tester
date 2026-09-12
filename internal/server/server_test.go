@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -36,7 +37,7 @@ func newTestServer(t *testing.T, algs ...keyring.Algorithm) (*httptest.Server, *
 		t.Fatalf("keyring.New() error = %v", err)
 	}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	ts := httptest.NewServer(New(ring, factory, testIssuer, "test-version").Handler())
+	ts := httptest.NewServer(New(ring, factory, testIssuer, "test-version", 100, 200).Handler())
 	t.Cleanup(ts.Close)
 	return ts, ring
 }
@@ -151,7 +152,7 @@ func TestVersionEndpoint(t *testing.T) {
 	}
 
 	// Also test handler directly
-	s := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer, "test-version")
+	s := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer, "test-version", 100, 200)
 	req := httptest.NewRequest(http.MethodGet, "/version", nil)
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, req)
@@ -557,7 +558,7 @@ func TestJWKSEndpointHandlesKeyringError(t *testing.T) {
 	ts, ring := newTestServer(t, keyring.AlgRS256)
 	_ = ts
 
-	handler := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer, "test-version").Handler()
+	handler := New(ring, tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour), testIssuer, "test-version", 100, 200).Handler()
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -603,7 +604,7 @@ func TestTokenEndpointReturns400ForTTLTooLong(t *testing.T) {
 func TestTokenEndpointReturns503WhenNoActiveKey(t *testing.T) {
 	ring := &noActiveKeyRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -617,7 +618,7 @@ func TestTokenEndpointReturns503WhenNoActiveKey(t *testing.T) {
 func TestJWKSEndpointHandlesMarshalError(t *testing.T) {
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
@@ -630,7 +631,7 @@ func TestJWKSEndpointHandlesMarshalError(t *testing.T) {
 func TestHandleTokenErrorPaths(t *testing.T) {
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	tests := []struct {
 		name       string
@@ -722,7 +723,7 @@ func (f *failingJWKSRing) EnabledAlgorithms() []keyring.Algorithm {
 func TestJWKSEndpointHandlesError(t *testing.T) {
 	ring := &failingJWKSRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
@@ -736,7 +737,7 @@ func TestJWKSEndpointHandlesError(t *testing.T) {
 func TestHandleTokenNoActiveKeyReturns503(t *testing.T) {
 	ring := &noActiveKeyRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -781,7 +782,7 @@ func (r *internalErrRing) EnabledAlgorithms() []keyring.Algorithm {
 func TestHandleTokenInternalServerError(t *testing.T) {
 	ring := &internalErrRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"u"}}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -829,7 +830,7 @@ func (f *failingMarshalRing) EnabledAlgorithms() []keyring.Algorithm {
 func TestJWKSEndpointMarshalError(t *testing.T) {
 	ring := &failingMarshalRing{}
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	s := New(ring, factory, testIssuer, "test-version")
+	s := New(ring, factory, testIssuer, "test-version", 100, 200)
 
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	w := httptest.NewRecorder()
@@ -877,15 +878,16 @@ func TestSecurityHeadersPresent(t *testing.T) {
 }
 
 func TestRateLimitEnforced(t *testing.T) {
+	// Use small burst for deterministic testing
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	srv := New(ring, factory, testIssuer, "test-version")
+	srv := New(ring, factory, testIssuer, "test-version", 100, 10)
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
 
-	// Make requests up to burst limit
-	for i := 0; i < 200; i++ {
+	// Make requests up to burst limit (10)
+	for i := 0; i < 10; i++ {
 		srv.Handler().ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("request %d: status = %d, want 200", i, w.Code)
@@ -904,9 +906,10 @@ func TestRateLimitEnforced(t *testing.T) {
 }
 
 func TestRateLimitPerIP(t *testing.T) {
+	// Use small burst for deterministic testing
 	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
 	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
-	srv := New(ring, factory, testIssuer, "test-version")
+	srv := New(ring, factory, testIssuer, "test-version", 100, 10)
 
 	// Simulate two different IPs via X-Forwarded-For
 	req1 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -917,8 +920,8 @@ func TestRateLimitPerIP(t *testing.T) {
 	req2.Header.Set("X-Forwarded-For", "10.0.0.2")
 	w2 := httptest.NewRecorder()
 
-	// Exhaust burst for IP 1
-	for i := 0; i < 200; i++ {
+	// Exhaust burst for IP 1 (10 requests)
+	for i := 0; i < 10; i++ {
 		srv.Handler().ServeHTTP(w1, req1)
 		if w1.Code != http.StatusOK {
 			t.Fatalf("IP1 request %d: status = %d, want 200", i, w1.Code)
@@ -932,7 +935,7 @@ func TestRateLimitPerIP(t *testing.T) {
 		t.Fatalf("IP1 expected 429, got %d", w1.Code)
 	}
 
-	// IP 2 should still work
+	// IP 2 should still work (separate limiter)
 	srv.Handler().ServeHTTP(w2, req2)
 	if w2.Code != http.StatusOK {
 		t.Fatalf("IP2 expected 200, got %d", w2.Code)
@@ -953,5 +956,139 @@ func TestTokenEndpointHasSecurityHeaders(t *testing.T) {
 	}
 	if resp.Header.Get("X-Frame-Options") != "DENY" {
 		t.Error("X-Frame-Options missing on /token")
+	}
+}
+
+func TestRequestIDHeaderGenerated(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	endpoints := []string{
+		"/",
+		"/healthz",
+		"/version",
+		"/.well-known/jwks.json",
+		"/.well-known/openid-configuration",
+		"/token",
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep, func(t *testing.T) {
+			var resp *http.Response
+			var err error
+			if ep == "/token" {
+				resp, err = http.Post(ts.URL+ep, "application/json", strings.NewReader(`{}`))
+			} else {
+				resp, err = http.Get(ts.URL + ep)
+			}
+			if err != nil {
+				t.Fatalf("request %s: %v", ep, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			requestID := resp.Header.Get("X-Request-ID")
+			if requestID == "" {
+				t.Errorf("X-Request-ID missing on %s", ep)
+			}
+			if len(requestID) != 32 {
+				t.Errorf("X-Request-ID invalid length on %s: got %d, want 32", ep, len(requestID))
+			}
+		})
+	}
+}
+
+func TestRequestIDHeaderPropagated(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	customID := "custom-request-id-12345"
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	req.Header.Set("X-Request-ID", customID)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.Header.Get("X-Request-ID") != customID {
+		t.Errorf("X-Request-ID not propagated: got %s, want %s", resp.Header.Get("X-Request-ID"), customID)
+	}
+}
+
+func TestTokenAuditLogFields(t *testing.T) {
+	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"user-1"},"alg":"RS256"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("invalid log JSON: %v", err)
+	}
+
+	if logEntry["event"] != "token_minted" {
+		t.Errorf("event = %v, want token_minted", logEntry["event"])
+	}
+	if logEntry["alg"] != "RS256" {
+		t.Errorf("alg = %v, want RS256", logEntry["alg"])
+	}
+	if logEntry["kid"] == "" {
+		t.Error("kid missing from audit log")
+	}
+	if logEntry["expires_in"].(float64) != 3600 {
+		t.Errorf("expires_in = %v, want 3600", logEntry["expires_in"])
+	}
+	if logEntry["request_id"] == "" {
+		t.Error("request_id missing from audit log")
+	}
+	if logEntry["client_ip"] == "" {
+		t.Error("client_ip missing from audit log")
+	}
+}
+
+func TestTokenAuditLogOnFailure(t *testing.T) {
+	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"alg":"HS256"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("invalid log JSON: %v", err)
+	}
+
+	if logEntry["event"] != "token_mint_failed" {
+		t.Errorf("event = %v, want token_mint_failed", logEntry["event"])
+	}
+	if logEntry["error"] == "" {
+		t.Error("error missing from audit log")
 	}
 }

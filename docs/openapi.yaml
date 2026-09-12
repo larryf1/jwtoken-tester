@@ -1,0 +1,424 @@
+openapi: "3.1.0"
+info:
+  title: jwtoken-tester API
+  description: |
+    Ephemeral JWT/JWKS test issuer for integration testing JWT-aware services.
+    This is a **test tool only** - not a production IdP. Keys are generated in-memory
+    and discarded on shutdown. No TLS is implemented; terminate TLS at a reverse proxy.
+  version: "1.1.0-1-81a0fb8"
+  contact:
+    name: jwtoken-tester
+    url: https://github.com/larryf1/jwtoken-tester
+    email: larryf1@gmail.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://127.0.0.1:8080
+    description: Default local development server
+
+tags:
+  - name: Metadata
+    description: Service metadata and health
+  - name: Keys
+    description: JWKS and key management endpoints
+  - name: Tokens
+    description: Token minting endpoint
+  - name: Discovery
+    description: OpenID Connect discovery
+
+paths:
+  /:
+    get:
+      tags: [Metadata]
+      summary: Service index
+      description: Returns basic service information and available endpoints
+      operationId: getIndex
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexResponse'
+
+  /healthz:
+    get:
+      tags: [Metadata]
+      summary: Health check
+      description: Liveness probe with active key IDs per algorithm
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /version:
+    get:
+      tags: [Metadata]
+      summary: Version information
+      description: Returns the service version
+      operationId: getVersion
+      responses:
+        "200":
+          description: Version information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+
+  /.well-known/jwks.json:
+    get:
+      tags: [Keys]
+      summary: JSON Web Key Set (JWKS)
+      description: |
+        Returns the live public key set including active keys and retired keys
+        still within their grace period. Each key includes RFC 7638 thumbprint-derived
+        `kid`, `use=sig`, and algorithm (`RS256`, `ES256`, or `EdDSA`).
+      operationId: getJWKS
+      responses:
+        "200":
+          description: JWKS document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JWKS'
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /.well-known/jwks.json/{kid}:
+    get:
+      tags: [Keys]
+      summary: Get single JWK by Key ID
+      description: |
+        Fetches a single public key from the live key set by its thumbprint-derived `kid`.
+        Returns the same shape as one entry of the JWKS set. Retired keys still inside
+        their grace window are reachable.
+      operationId: getJWKByKID
+      parameters:
+        - name: kid
+          in: path
+          required: true
+          schema:
+            type: string
+          description: RFC 7638 thumbprint-derived Key ID
+      responses:
+        "200":
+          description: JWK document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JWK'
+        "400":
+          description: Missing kid parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Key not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /.well-known/openid-configuration:
+    get:
+      tags: [Discovery]
+      summary: OpenID Connect Discovery Document
+      description: |
+        OIDC-style discovery document advertising `issuer`, `jwks_uri`, `token_endpoint`,
+        and `id_token_signing_alg_values_supported` listing all enabled algorithms.
+      operationId: getDiscovery
+      responses:
+        "200":
+          description: Discovery document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryResponse'
+
+  /token:
+    post:
+      tags: [Tokens]
+      summary: Mint a JWT
+      description: |
+        Mints a signed JWT with the requested claims and algorithm.
+        Empty body mints an anonymous token with defaults.
+
+        **Claim handling:**
+        - `iss`, `iat`, `nbf` are injected automatically; explicit values in `claims` win
+        - `exp`, `iat`, `nbf` accept epoch seconds (`1800000000`), durations (`"90m"`, `"in 1h"`), or RFC 3339 timestamps
+        - Omitted `exp` means now + `DEFAULT_TTL` (default 1h)
+        - Lifetimes beyond `MAX_TTL` (default 24h) are refused with 400
+        - Already-expired tokens are minted happily (useful for negative tests)
+
+        **Algorithms:** `RS256`, `ES256`, `EdDSA` (must be enabled)
+      operationId: mintToken
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+      responses:
+        "200":
+          description: Token minted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: Request correlation ID
+        "400":
+          description: Bad request (invalid JSON, unsupported algorithm, TTL too long)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: No active signing key available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    IndexResponse:
+      type: object
+      properties:
+        service:
+          type: string
+          example: jwtoken-tester
+        version:
+          type: string
+          example: "1.0.0"
+        warning:
+          type: string
+          example: "integration-test token issuer; ephemeral in-memory keys"
+        endpoints:
+          type: array
+          items:
+            type: string
+          example:
+            - "GET /healthz"
+            - "GET /.well-known/jwks.json"
+            - "GET /.well-known/jwks.json/{kid}"
+            - "GET /.well-known/openid-configuration"
+            - "POST /token"
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok]
+          example: ok
+        version:
+          type: string
+          example: "1.0.0"
+        warning:
+          type: string
+          example: "test issuer: keys are ephemeral and in-memory; do not use in production"
+        algorithms:
+          type: array
+          items:
+            type: string
+            enum: [RS256, ES256, EdDSA]
+          example: [RS256, ES256, EdDSA]
+        active_kids:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            RS256: "abc123..."
+            ES256: "def456..."
+
+    VersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+          example: "1.0.0"
+
+    JWKS:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/JWK'
+
+    JWK:
+      type: object
+      properties:
+        kty:
+          type: string
+          enum: [RSA, EC, OKP]
+          description: Key type
+        use:
+          type: string
+          enum: [sig]
+          description: Key usage (signature)
+        alg:
+          type: string
+          enum: [RS256, ES256, EdDSA]
+          description: Algorithm
+        kid:
+          type: string
+          description: RFC 7638 thumbprint-derived Key ID
+        n:
+          type: string
+          description: RSA modulus (for RSA keys)
+        e:
+          type: string
+          description: RSA public exponent (for RSA keys)
+        crv:
+          type: string
+          enum: [P-256, Ed25519]
+          description: Curve (for EC/OKP keys)
+        x:
+          type: string
+          description: X coordinate (for EC/OKP keys)
+        y:
+          type: string
+          description: Y coordinate (for EC keys)
+
+    DiscoveryResponse:
+      type: object
+      properties:
+        issuer:
+          type: string
+          format: uri
+          example: "http://127.0.0.1:8080"
+        jwks_uri:
+          type: string
+          format: uri
+          example: "http://127.0.0.1:8080/.well-known/jwks.json"
+        token_endpoint:
+          type: string
+          format: uri
+          example: "http://127.0.0.1:8080/token"
+        subject_types_supported:
+          type: array
+          items:
+            type: string
+          example: ["public"]
+        id_token_signing_alg_values_supported:
+          type: array
+          items:
+            type: string
+            enum: [RS256, ES256, EdDSA]
+          example: ["RS256", "ES256", "EdDSA"]
+        response_types_supported:
+          type: array
+          items:
+            type: string
+          example: ["token"]
+        claims_supported:
+          type: array
+          items:
+            type: string
+          example: ["iss", "sub", "aud", "exp", "nbf", "iat", "jti"]
+
+    TokenRequest:
+      type: object
+      properties:
+        claims:
+          type: object
+          description: Arbitrary claim set; standard claims included
+          additionalProperties: true
+          example:
+            sub: "user-123"
+            aud: ["my-service"]
+            roles: ["admin"]
+            tenant: "acme"
+        alg:
+          type: string
+          enum: [RS256, ES256, EdDSA]
+          description: Signing algorithm (must be enabled)
+          example: RS256
+        headers:
+          type: object
+          description: Extra protected JOSE header parameters to embed
+          additionalProperties: true
+          example:
+            x-test-harness: "run-7"
+
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: JWT in JWS Compact Serialization
+          example: "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9..."
+        token_type:
+          type: string
+          enum: [Bearer]
+          example: Bearer
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds
+          example: 3600
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "unsupported algorithm"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  headers:
+    X-Request-ID:
+      schema:
+        type: string
+      description: Request correlation ID (generated if not provided)
+    X-Content-Type-Options:
+      schema:
+        type: string
+        enum: [nosniff]
+      description: Prevents MIME type sniffing
+    X-Frame-Options:
+      schema:
+        type: string
+        enum: [DENY]
+      description: Prevents clickjacking
+    Referrer-Policy:
+      schema:
+        type: string
+        enum: [no-referrer]
+      description: Controls referrer information
+    Content-Security-Policy:
+      schema:
+        type: string
+      description: Restricts resource loading

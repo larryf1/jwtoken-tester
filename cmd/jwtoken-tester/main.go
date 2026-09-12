@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,6 +31,8 @@ type serveConfig struct {
 	RotationPeriod time.Duration
 	GracePeriod    time.Duration
 	Algorithms     string
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 
 type printTokenConfig struct {
@@ -96,6 +99,8 @@ func runServe(logger *slog.Logger, args []string) {
 		RotationPeriod: envDur("ROTATION_INTERVAL", 30*time.Minute),
 		GracePeriod:    envDur("GRACE_PERIOD", 25*time.Hour),
 		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
+		RateLimitRPS:   envFloat("RATE_LIMIT_RPS", 100),
+		RateLimitBurst: envInt("RATE_LIMIT_BURST", 200),
 	}
 
 	if Version == "dev" {
@@ -111,6 +116,8 @@ func runServe(logger *slog.Logger, args []string) {
 	fs.DurationVar(&cfg.RotationPeriod, "rotation-interval", cfg.RotationPeriod, "key rotation cadence, 0 disables (env ROTATION_INTERVAL)")
 	fs.DurationVar(&cfg.GracePeriod, "grace-period", cfg.GracePeriod, "retired keys stay published this long (env GRACE_PERIOD)")
 	fs.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable: RS256,ES256,EdDSA (env ALGORITHMS)")
+	fs.Float64Var(&cfg.RateLimitRPS, "rate-limit-rps", cfg.RateLimitRPS, "requests per second per IP (env RATE_LIMIT_RPS)")
+	fs.IntVar(&cfg.RateLimitBurst, "rate-limit-burst", cfg.RateLimitBurst, "burst allowance per IP (env RATE_LIMIT_BURST)")
 
 	if err := fs.Parse(args); err != nil {
 		return
@@ -128,9 +135,10 @@ func runServe(logger *slog.Logger, args []string) {
 	ring.StartRotation(ctx, cfg.RotationPeriod, logger)
 
 	factory := tokenfactory.NewFactory(ring, cfg.Issuer, cfg.DefaultTTL, cfg.MaxTTL)
+	srv := server.New(ring, factory, cfg.Issuer, Version, cfg.RateLimitRPS, cfg.RateLimitBurst)
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           server.New(ring, factory, cfg.Issuer, Version).Handler(),
+		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -141,6 +149,8 @@ func runServe(logger *slog.Logger, args []string) {
 			"default_ttl", cfg.DefaultTTL.String(),
 			"max_ttl", cfg.MaxTTL.String(),
 			"algorithms", cfg.Algorithms,
+			"rate_limit_rps", cfg.RateLimitRPS,
+			"rate_limit_burst", cfg.RateLimitBurst,
 		)
 		logger.Warn("TEST ISSUER ONLY: keys are generated in memory and never persisted; do not expose to production traffic")
 		warnIfRemoteBind(logger, cfg.Listen)
@@ -242,6 +252,30 @@ func envDur(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func envFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	i, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return i
 }
 
 func parseAlgorithms(s string) []keyring.Algorithm {
