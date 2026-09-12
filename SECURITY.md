@@ -35,10 +35,17 @@ What to include:
 
 ## Not security vulnerabilities
 
-This is a deliberately insecure-by-default tool: no TLS, permissive signing,
+This is a deliberately insecure-by-default tool: **no TLS**, permissive signing,
 warnings when bound beyond loopback. Behaviour that is "insecure *on purpose*"
 and documented in the README is usually not a vulnerability. If you are unsure,
 report it anyway.
+
+### TLS / HTTPS
+
+jwtoken-tester does not implement TLS. It speaks plain HTTP only.
+For test environments requiring HTTPS, place a reverse proxy (nginx, Caddy, Traefik,
+envoy, etc.) in front to terminate TLS. This is by design — the tool focuses on
+JWT/JWKS correctness, not transport security.
 
 ## Security guardrails we keep in the codebase
 

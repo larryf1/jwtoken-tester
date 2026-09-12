@@ -214,7 +214,7 @@ func assertZeroized(t *testing.T, priv crypto.PrivateKey) {
 			t.Fatal("precomputed values not zeroized")
 		}
 	case *ecdsa.PrivateKey:
-		// ECDSA zeroization is deprecated in Go 1.26+; we no longer zeroize D
+		// ECDSA zeroization skipped (Go 1.26+ deprecation); key discarded on exit.
 	case ed25519.PrivateKey:
 		for i := range k {
 			if k[i] != 0 {

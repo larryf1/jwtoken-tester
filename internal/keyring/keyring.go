@@ -328,8 +328,8 @@ func zeroizePrivate(priv crypto.PrivateKey) {
 			p.SetInt64(0)
 		}
 	case *ecdsa.PrivateKey:
-		// D.SetInt64(0) is deprecated in Go 1.26+; for test-only ephemeral keys
-		// we rely on GC to clear memory. The key is discarded on process exit.
+		// D.SetInt64(0) deprecated in Go 1.26+; not safe for cryptographic values.
+		// ECDSA private keys are discarded on process exit; GC clears memory.
 	case ed25519.PrivateKey:
 		for i := range k {
 			k[i] = 0

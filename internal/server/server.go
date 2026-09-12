@@ -8,19 +8,67 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/time/rate"
 )
 
-const maxRequestBody = 1 << 20
+const (
+	maxRequestBody = 1 << 20
+	rateLimitRPS   = 100
+	rateLimitBurst = 200
+)
 
 type Server struct {
-	ring    keyring.Ring
-	Factory *tokenfactory.Factory
-	Issuer  string
-	Version string
+	ring     keyring.Ring
+	Factory  *tokenfactory.Factory
+	Issuer   string
+	Version  string
+	visitors map[string]*rate.Limiter
+	lastSeen map[string]time.Time
+	mu       sync.Mutex
 }
 
 func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string, version string) *Server {
-	return &Server{ring: ring, Factory: factory, Issuer: issuer, Version: version}
+	s := &Server{
+		ring:     ring,
+		Factory:  factory,
+		Issuer:   issuer,
+		Version:  version,
+		visitors: make(map[string]*rate.Limiter),
+		lastSeen: make(map[string]time.Time),
+	}
+	go s.cleanupVisitors()
+	return s
+}
+
+func (s *Server) getVisitorLimiter(ip string) *rate.Limiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	limiter, exists := s.visitors[ip]
+	if !exists {
+		limiter = rate.NewLimiter(rateLimitRPS, rateLimitBurst)
+		s.visitors[ip] = limiter
+	}
+	s.lastSeen[ip] = time.Now()
+	return limiter
+}
+
+func (s *Server) cleanupVisitors() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		for ip, lastSeen := range s.lastSeen {
+			if time.Since(lastSeen) > 10*time.Minute {
+				delete(s.visitors, ip)
+				delete(s.lastSeen, ip)
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -32,7 +80,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/jwks.json/", s.handleJWKByKID)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("POST /token", s.handleToken)
-	return mux
+
+	return s.securityHeaders(s.rateLimit(mux))
+}
+
+func (s *Server) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			ip = strings.Split(forwarded, ",")[0]
+		}
+		limiter := s.getVisitorLimiter(strings.TrimSpace(ip))
+		if !limiter.Allow() {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {

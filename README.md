@@ -13,8 +13,11 @@ in memory at startup and discarded on shutdown. Real IdPs bring secrets, configu
 network dependencies; this is the throwaway replacement you point a test environment at instead
 of hacking basic-auth shortcuts into your middleware.
 
-> **Test tooling only.** Not a production IdP: no users, no consent, no refresh tokens, no TLS.
+> **Test tooling only.** Not a production IdP: no users, no consent, no refresh tokens, **no TLS**.
 > Binds to loopback by default and warns loudly if bound elsewhere.
+> 
+> **TLS/HTTPS:** This tool does not implement TLS. In test environments requiring HTTPS,
+> terminate TLS at a reverse proxy (nginx, Caddy, Traefik, etc.) in front of this service.
 
 ## How it works
 

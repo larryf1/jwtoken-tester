@@ -839,3 +839,119 @@ func TestJWKSEndpointMarshalError(t *testing.T) {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
 }
+
+func TestSecurityHeadersPresent(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	endpoints := []string{
+		"/",
+		"/healthz",
+		"/version",
+		"/.well-known/jwks.json",
+		"/.well-known/openid-configuration",
+		"/token",
+	}
+
+	for _, ep := range endpoints {
+		t.Run(ep, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + ep)
+			if err != nil {
+				t.Fatalf("GET %s: %v", ep, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+				t.Errorf("X-Content-Type-Options missing on %s", ep)
+			}
+			if resp.Header.Get("X-Frame-Options") != "DENY" {
+				t.Errorf("X-Frame-Options missing on %s", ep)
+			}
+			if resp.Header.Get("Referrer-Policy") != "no-referrer" {
+				t.Errorf("Referrer-Policy missing on %s", ep)
+			}
+			if resp.Header.Get("Content-Security-Policy") != "default-src 'none'; frame-ancestors 'none'" {
+				t.Errorf("Content-Security-Policy missing on %s: %s", ep, resp.Header.Get("Content-Security-Policy"))
+			}
+		})
+	}
+}
+
+func TestRateLimitEnforced(t *testing.T) {
+	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version")
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+
+	// Make requests up to burst limit
+	for i := 0; i < 200; i++ {
+		srv.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200", i, w.Code)
+		}
+		w = httptest.NewRecorder()
+	}
+
+	// Next request should be rate limited
+	srv.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after burst, got %d", w.Code)
+	}
+	if w.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("rate limit response should be JSON")
+	}
+}
+
+func TestRateLimitPerIP(t *testing.T) {
+	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version")
+
+	// Simulate two different IPs via X-Forwarded-For
+	req1 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req1.Header.Set("X-Forwarded-For", "10.0.0.1")
+	w1 := httptest.NewRecorder()
+
+	req2 := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req2.Header.Set("X-Forwarded-For", "10.0.0.2")
+	w2 := httptest.NewRecorder()
+
+	// Exhaust burst for IP 1
+	for i := 0; i < 200; i++ {
+		srv.Handler().ServeHTTP(w1, req1)
+		if w1.Code != http.StatusOK {
+			t.Fatalf("IP1 request %d: status = %d, want 200", i, w1.Code)
+		}
+		w1 = httptest.NewRecorder()
+	}
+
+	// IP 1 should be rate limited
+	srv.Handler().ServeHTTP(w1, req1)
+	if w1.Code != http.StatusTooManyRequests {
+		t.Fatalf("IP1 expected 429, got %d", w1.Code)
+	}
+
+	// IP 2 should still work
+	srv.Handler().ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("IP2 expected 200, got %d", w2.Code)
+	}
+}
+
+func TestTokenEndpointHasSecurityHeaders(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	resp, err := http.Post(ts.URL+"/token", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST /token: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("X-Content-Type-Options missing on /token")
+	}
+	if resp.Header.Get("X-Frame-Options") != "DENY" {
+		t.Error("X-Frame-Options missing on /token")
+	}
+}
