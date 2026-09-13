@@ -1,0 +1,12 @@
+# DCO configuration for the DCO GitHub App
+# Allows remediation commits and skips sign-off for bots
+allowRemediationCommits:
+  individual: true
+require:
+  members: false
+# Skip DCO check for known bots
+skip:
+  authors:
+    - dependabot[bot]
+    - renovate[bot]
+    - github-actions[bot]

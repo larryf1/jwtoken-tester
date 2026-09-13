@@ -106,6 +106,12 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
           for sha in $(git rev-list "$BASE".."$HEAD"); do
+            author=$(git show -s --format='%an' "$sha")
+            # Skip DCO check for known bots
+            if [[ "$author" =~ \[bot\]$ ]] || [[ "$author" == "github-actions" ]]; then
+              echo "Skipping DCO check for bot commit: $sha ($author)"
+              continue
+            fi
             if ! git show -s --format=%B "$sha" | grep -q '^Signed-off-by:'; then
               echo "ERROR: commit $sha is missing a 'Signed-off-by:' trailer"
               git show -s --format='%h %s' "$sha"
