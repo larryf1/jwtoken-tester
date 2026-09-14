@@ -3,6 +3,10 @@
   "version": "1.2.0",
   "description": "JWT Token Tester",
   "private": true,
+  "engines": {
+    "node": ">=22",
+    "npm": ">=10"
+  },
   "scripts": {
     "semantic-release": "semantic-release"
   },
