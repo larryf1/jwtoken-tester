@@ -1,3 +1,15 @@
+# [1.3.0](https://github.com/larryf1/jwtoken-tester/compare/v1.2.0...v1.3.0) (2026-09-14)
+
+
+### Bug Fixes
+
+* **commitlint:** set maximum body line length to 200 characters ([dcfdda9](https://github.com/larryf1/jwtoken-tester/commit/dcfdda91cf01d74cbf7d4ad5478a22773faee8c5))
+
+
+### Features
+
+* **dco:** add DCO configuration to skip sign-off for known bots and allow remediation commits ([3bf51ad](https://github.com/larryf1/jwtoken-tester/commit/3bf51ad0e090a6fb8584c3e7a9e3d75c5ad378e9))
+
 # [1.2.0](https://github.com/larryf1/jwtoken-tester/compare/v1.1.0...v1.2.0) (2026-09-12)
 
 
