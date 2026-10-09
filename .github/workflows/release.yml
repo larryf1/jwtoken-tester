@@ -2,6 +2,12 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Run go-semantic-release in dry mode (no writes, publish skipped)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,29 +31,48 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN }}
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          node-version: '22'
-          npm-version: '10.9.4'
-          cache: 'npm'
-
-      - name: Install semantic-release dependencies
-        run: npm ci --ignore-scripts
+          go-version: '1.27'
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Run semantic-release
+      - name: Run go-semantic-release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: npx semantic-release
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          args="--allow-no-changes --changelog CHANGELOG.md --prepend-changelog --version-file"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args="$args --dry"
+          fi
+          go run github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release@v2.31.0 $args
+
+      - name: Commit release artifacts, tag, and push
+        if: inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          if [ ! -f .version ]; then
+            echo "No new version; nothing to commit or tag."
+            exit 0
+          fi
+          VERSION=$(cat .version)
+          echo "$VERSION" > VERSION
+          sed -i "s/version: \".*\"/version: \"$VERSION\"/" docs/openapi.yaml
+          awk '/^# /{c++} c==1 && !/^# \[0/{print} c==2{exit}' CHANGELOG.md > /tmp/notes.md
+          git add CHANGELOG.md VERSION docs/openapi.yaml
+          git commit -m "chore(release): $VERSION [skip ci]" -m "$(cat /tmp/notes.md)"
+          git tag -a "v$VERSION" -m "$(cat /tmp/notes.md)"
+          git push origin main "v$VERSION"
 
       - name: Verify CHANGELOG.md updated
+        if: inputs.dry_run != true
         run: |
           if [ -f CHANGELOG.md ]; then
             echo "CHANGELOG.md updated:"
@@ -60,18 +85,18 @@ jobs:
       - name: Capture release version
         id: capture
         run: |
-          if [ -f .release-version ]; then
+          if [ -f .version ] && [ "${{ inputs.dry_run }}" != "true" ]; then
             echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "version=$(cat .release-version)" >> "$GITHUB_OUTPUT"
+            echo "version=$(cat .version)" >> "$GITHUB_OUTPUT"
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
             echo "version=" >> "$GITHUB_OUTPUT"
-            echo "No new version from semantic-release; skipping publish."
+            echo "No new version from go-semantic-release; skipping publish."
           fi
 
   publish:
     needs: version
-    if: needs.version.outputs.release == 'true'
+    if: needs.version.outputs.release == 'true' && inputs.dry_run != true
     runs-on: ubuntu-latest
     # GoReleaser creates the GitHub release; the image is pushed to GHCR.
     permissions:

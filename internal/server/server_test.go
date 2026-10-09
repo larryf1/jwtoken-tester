@@ -1092,3 +1092,50 @@ func TestTokenAuditLogOnFailure(t *testing.T) {
 		t.Error("error missing from audit log")
 	}
 }
+
+func TestTokenAuditLogUsesForwardedFor(t *testing.T) {
+	ring, _ := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, nil)
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"user-1"},"alg":"RS256"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "203.0.113.7, 198.51.100.9")
+	w := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("invalid log JSON: %v", err)
+	}
+	if logEntry["client_ip"] != "203.0.113.7" {
+		t.Errorf("client_ip = %v, want first X-Forwarded-For hop 203.0.113.7", logEntry["client_ip"])
+	}
+}
+
+func TestNewAppliesDefaultRateLimit(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+
+	s := New(ring, factory, testIssuer, "test-version", 0, 0)
+
+	if s.rateLimitRPS != defaultRateLimitRPS {
+		t.Errorf("rateLimitRPS = %v, want default %v", s.rateLimitRPS, defaultRateLimitRPS)
+	}
+	if s.rateLimitBurst != defaultRateLimitBurst {
+		t.Errorf("rateLimitBurst = %v, want default %v", s.rateLimitBurst, defaultRateLimitBurst)
+	}
+}

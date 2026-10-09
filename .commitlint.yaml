@@ -1,0 +1,54 @@
+min-version: v0.11.0
+formatter: default
+rules:
+  - header-max-length
+  - header-full-stop
+  - type-enum
+  - type-case
+  - description-full-stop
+  - body-leading-blank
+  - footer-leading-blank
+  - body-max-line-length
+  - footer-max-line-length
+severity:
+  default: error
+  rules: {}
+settings:
+  header-max-length:
+    argument: 100
+    flags: {}
+  header-full-stop:
+    argument: "."
+    flags: {}
+  type-enum:
+    argument:
+      - build
+      - chore
+      - ci
+      - docs
+      - feat
+      - fix
+      - perf
+      - refactor
+      - revert
+      - style
+      - test
+    flags: {}
+  type-case:
+    argument: lower-case
+    flags: {}
+  description-full-stop:
+    argument: "."
+    flags: {}
+  body-max-line-length:
+    argument: 200
+    flags: {}
+  footer-max-line-length:
+    argument: 200
+    flags: {}
+  body-leading-blank:
+    flags: {}
+  footer-leading-blank:
+    flags: {}
+disable-default-ignores: false
+ignores: []
