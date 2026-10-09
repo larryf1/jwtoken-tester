@@ -101,7 +101,7 @@ jobs:
           go-version: '1.27'
 
       - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: make govulncheck
 
   lint-commits:
     if: github.event_name == 'pull_request'
@@ -118,12 +118,10 @@ jobs:
           go-version: '1.27' # x-version-syncedwith-docker
 
       - name: Lint commit messages
-        run: |
-          fail=0
-          for sha in $(git rev-list "${{ github.event.pull_request.base.sha }}".."${{ github.event.pull_request.head.sha }}"); do
-            git show -s --format=%B "$sha" | go run github.com/conventionalcommit/commitlint@v0.12.0 lint || fail=1
-          done
-          exit $fail
+        run: >
+          make lint-commits
+          LINT_BASE=${{ github.event.pull_request.base.sha }}
+          LINT_HEAD=${{ github.event.pull_request.head.sha }}
 
   dco:
     if: github.event_name == 'pull_request'

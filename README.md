@@ -262,8 +262,9 @@ just before a rotation stay verifiable until they expire.
 
 ```sh
 make build   # compile to bin/jwtoken-tester(.exe)
-make test    # go test ./...
+make test    # go test ./... (+ third_party parser tests)
 make lint    # go vet + gofmt formatting check (make fmt fixes)
+make govulncheck  # scan dependencies for known vulnerabilities
 make all     # lint, test, build in one pass
 ```
 
@@ -278,6 +279,7 @@ cmd/jwtoken-tester/     main binary, flag/env configuration
 internal/keyring/       key generation, rotation, RFC 7638 kids, zeroization
 internal/tokenfactory/  claim templating, TTL parsing, signing
 internal/server/        HTTP handlers, JWKS, discovery document
+third_party/            vendored commitlint parser (patched, see its README)
 ```
 
 ## Roadmap

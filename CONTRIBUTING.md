@@ -15,9 +15,10 @@ Fork the repo, clone it, then build and test:
 
 ```sh
 make all          # lint, test, build in one pass
-make test         # go test ./...
+make test         # go test ./... (plus vendored parser tests)
 make lint         # go vet + gofmt formatting check
 make coverage     # measure coverage (threshold: 90%)
+make govulncheck  # scan dependencies for known vulnerabilities
 go run ./cmd/jwtoken-tester   # run the server locally
 ```
 
@@ -41,7 +42,7 @@ from commit messages, so the format is **enforced, not just requested**: the PR
 CI job `lint-commits` rejects any commit that does not follow the
 [Conventional Commits](https://www.conventionalcommits.org/) spec (run it
 locally with `make lint-commits`, or the CLI directly with
-`go run github.com/conventionalcommit/commitlint@v0.12.0 lint`).
+`go tool commitlint lint`).
 
 ```
 feat(server): add X
@@ -98,6 +99,7 @@ internal/tokenfactory/  claim templating, TTL parsing, signing
 internal/server/        HTTP handlers, JWKS, discovery document
 pkg/tester/             embeddable Go library mode (httptest helper)
 docker/                 container + docker-compose demo
+third_party/            vendored commitlint parser (patched, see its README)
 ```
 
 `internal/*` is intentionally internal. Shared public API lives under `pkg/`.

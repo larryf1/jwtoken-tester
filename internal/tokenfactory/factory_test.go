@@ -221,6 +221,14 @@ func TestMintRejectsUnsupportedAlg(t *testing.T) {
 	}
 }
 
+func TestMintRejectsAlgOutsideJWARegistry(t *testing.T) {
+	f, _ := newTestFactory(t, keyring.AlgRS256)
+	_, err := f.Mint(&Request{Alg: "HS256"})
+	if !errors.Is(err, ErrUnsupportedAlg) {
+		t.Fatalf("error = %v, want ErrUnsupportedAlg", err)
+	}
+}
+
 func TestMintAcceptsEnabledAlg(t *testing.T) {
 	f, _ := newTestFactory(t, keyring.AlgRS256, keyring.AlgES256, keyring.AlgEdDSA)
 
