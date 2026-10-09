@@ -36,11 +36,12 @@ never touch disk, env vars, logs, or HTTP responses.
 
 ## Conventional commits
 
-Release automation (`semantic-release`) derives versions and the changelog from
-commit messages, so the format is **enforced, not just requested**: the PR CI
-job `commitlint` rejects any commit that does not follow the
+Release automation (go-semantic-release) derives versions and the changelog
+from commit messages, so the format is **enforced, not just requested**: the PR
+CI job `lint-commits` rejects any commit that does not follow the
 [Conventional Commits](https://www.conventionalcommits.org/) spec (run it
-locally with `npx commitlint --from origin/main --to HEAD`).
+locally with `make lint-commits`, or the CLI directly with
+`go run github.com/conventionalcommit/commitlint@v0.12.0 lint`).
 
 ```
 feat(server): add X
@@ -54,7 +55,7 @@ change is breaking (→ major).
 
 ## Releases
 
-Releases are cut automatically from `main` by `semantic-release`. Versions are
+Releases are cut automatically from `main` by go-semantic-release. Versions are
 calculated from the merged conventional commits:
 
 - `feat` → **minor** (e.g. `1.0.0` → `1.1.0`)
@@ -63,8 +64,9 @@ calculated from the merged conventional commits:
 
 There is no manual version number step — the version is always derived. To cut
 a release, run the [Release](.github/workflows/release.yml) workflow
-(interactively, or with `gh workflow run release.yml`). It bumps the version in
-`VERSION`/`package.json`, updates `CHANGELOG.md`, tags the commit, pushes, and
+(interactively, or with `gh workflow run release.yml`). Set its `dry_run` input
+to preview the next version and notes without writing anything. It bumps the
+version in `VERSION`, updates `CHANGELOG.md`, tags the commit, pushes, and
 publishes binaries + the Docker image. Releases from the tag push flow through
 the [Publish](.github/workflows/publish.yml) workflow.
 

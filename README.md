@@ -76,13 +76,13 @@ docker run --rm -p 8080:8080 ghcr.io/larryf1/jwtoken-tester
 ## Releases
 
 Versions are derived automatically from [Conventional Commits](https://www.conventionalcommits.org/)
-and cut with [`semantic-release`](https://semantic-release.gitbook.io/): `feat` →
-minor, `fix` → patch, `BREAKING CHANGE:` → major. Every PR merge to `main` is
-gated by CI that enforces the commit format (`commitlint`) and the DCO
-`Signed-off-by:` trailer. There is no manual version to pick.
+and cut with [go-semantic-release](https://github.com/go-semantic-release/semantic-release):
+`feat` → minor, `fix` → patch, `BREAKING CHANGE:` → major. Every PR merge to `main` is
+gated by CI that enforces the commit format (`commitlint`, run it locally with
+`make lint-commits`) and the DCO `Signed-off-by:` trailer. There is no manual version to pick.
 
 The **Release** workflow does everything in one manual run:
-1. `semantic-release` analyzes the history, bumps the version, updates
+1. `go-semantic-release` analyzes the history, bumps the version, updates
    `CHANGELOG.md`/`VERSION`, and pushes the `vX.Y.Z` tag.
 2. GoReleaser builds the release binaries and creates the GitHub Release.
 3. The Docker image is built and pushed to GHCR as `X.Y.Z` and `latest`.
@@ -122,7 +122,7 @@ code a container runs is inspectable with `docker inspect`.
 `make build` and `make run` use the exact same scheme: the version is derived
 from `git describe` and baked into the binary via `-ldflags "-X main.Version=…"`.
 Running the binary through `go run` (no build flags) falls back to the `VERSION`
-file written by semantic-release, else `dev`.
+file written by go-semantic-release, else `dev`.
 
 [git-describe]: https://git-scm.com/docs/git-describe
 [oci-labels]: https://github.com/opencontainers/image-spec/blob/main/annotations.md#pre-defined-annotation-keys

@@ -17,7 +17,7 @@ else
 EXE_SUFFIX :=
 endif
 
-.PHONY: all build run test coverage coverage-html lint lint-install vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
+.PHONY: all build run test coverage coverage-html lint lint-install lint-commits vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
 
 all: lint test build ## Lint, test, then build
 
@@ -80,6 +80,13 @@ lint: fmt-check ## golangci-lint + gofmt formatting check
 
 lint-install: ## Install golangci-lint
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+lint-commits: ## Lint commits on this branch against the conventional-commit rules
+	@fail=0; \
+	for sha in $$(git log --format=%H origin/main..HEAD); do \
+		git show -s --format=%B $$sha | go run github.com/conventionalcommit/commitlint@v0.12.0 lint || fail=1; \
+	done; \
+	exit $$fail
 
 vet: ## Static analysis with go vet
 	go vet ./...
