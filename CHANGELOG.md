@@ -1,3 +1,51 @@
+## 2.0.0 (2026-10-09)
+
+#### Breaking Changes
+
+* **ci:** replace Node.js tooling with Go tools (#13) ([94665ab6](https://github.com/larryf1/jwtoken-tester/commit/94665ab694358cd3aad56ebf312763b2f7d5587c))
+```
+
+* feat(ci)!: replace Node.js tooling with Go tools
+
+Remove the entire Node.js footprint (package.json, package-lock.json,
+.npmrc, .nvmrc, commitlint.config.js, node_modules, tools/npm-stub) from
+the build, CI, release, and contribution path.
+
+Own commit linting and release cutting with two off-the-shelf Go tools
+run via go run: conventionalcommit/commitlint (.commitlint.yaml) and
+go-semantic-release (.semrelrc + changelog template). Add a govulncheck
+CI job over the shipped Go module in place of the npm-deps audit, and a
+dry_run dispatch input on the release workflow so it can be validated
+without writing.
+
+BREAKING CHANGE: contributors no longer need Node.js/npm; commit linting
+runs via `make lint-commits`.
+
+Signed-off-by: larry1 <larryf1@gmail.com>
+
+* feat(parser): implement lexer for conventional commit parsing
+
+Signed-off-by: Larry Finkelstein <77911806+larryf1@users.noreply.github.com>
+
+---------
+
+Signed-off-by: larry1 <larryf1@gmail.com>
+Signed-off-by: Larry Finkelstein <77911806+larryf1@users.noreply.github.com>
+```
+
+#### Chores
+
+* **specs:** add baseline specifications for jwtoken-tester functionality ([1c94d659](https://github.com/larryf1/jwtoken-tester/commit/1c94d6593e34ed45c346bbf945953bf5f2354920))
+* **deps:** add npm stub override in package.json and update package-lock.json ([51279bb2](https://github.com/larryf1/jwtoken-tester/commit/51279bb259f6694dc80e11adb6c7a82ed0012e38))
+* **deps:** bump @commitlint/config-conventional from 21.2.2 to 21.2.3 (#10) ([77f53e37](https://github.com/larryf1/jwtoken-tester/commit/77f53e37d2d737f3127c0a1957bb10d2a4a8daca))
+* **deps:** bump @commitlint/cli from 21.2.2 to 21.2.3 (#11) ([9aab854e](https://github.com/larryf1/jwtoken-tester/commit/9aab854e68ce93f5200a3c7e4fa03f93f7d30e6c))
+
+#### CI
+
+* enhance CI workflows with SHA-pinning for actions and add security audits (#12) ([788e2a14](https://github.com/larryf1/jwtoken-tester/commit/788e2a141948714c86cc925314e08442643fe34b))
+* add npm-10 lockfile sync gate and pin npm version ([910462f0](https://github.com/larryf1/jwtoken-tester/commit/910462f00c1da42224ec51e463a73e96f745f1da))
+
+
 # [1.3.0](https://github.com/larryf1/jwtoken-tester/compare/v1.2.0...v1.3.0) (2026-09-14)
 
 
