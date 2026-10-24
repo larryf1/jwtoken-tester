@@ -32,6 +32,12 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -40,13 +46,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
-        run: |
-          IMAGE="${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}"
-          docker build \
-            --build-arg VERSION=${{ steps.version.outputs.version }} \
-            --build-arg REVISION=${{ github.sha }} \
-            --build-arg CREATED=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
-            -f docker/Dockerfile \
-            -t "$IMAGE:${{ steps.version.outputs.version }}" .
-          docker push "$IMAGE:${{ steps.version.outputs.version }}"
-          echo "Pushed $IMAGE:${{ steps.version.outputs.version }}"
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ github.event.head_commit.timestamp || '$(date -u +%Y-%m-%dT%H:%M:%SZ)' }}
+          tags: |
+            ${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}

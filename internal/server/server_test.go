@@ -13,16 +13,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	jwt5 "github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v4/jwa"
-	"github.com/lestrrat-go/jwx/v4/jwk"
-
 	"github.com/larryf1/jwtoken-tester/internal/keyring"
 	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
 const testIssuer = "http://127.0.0.1:8080"
@@ -389,6 +389,22 @@ func TestDiscoveryDocumentPointsAtIssuerAndJWKS(t *testing.T) {
 			if doc["jwks_uri"] != testIssuer+"/.well-known/jwks.json" {
 				t.Fatalf("jwks_uri = %v", doc["jwks_uri"])
 			}
+			if doc["token_endpoint"] != testIssuer+"/v2/oauth/token" {
+				t.Fatalf("token_endpoint = %v, want %q", doc["token_endpoint"], testIssuer+"/v2/oauth/token")
+			}
+			claims, ok := doc["claims_supported"].([]any)
+			if !ok {
+				t.Fatalf("claims_supported missing: %#v", doc["claims_supported"])
+			}
+			wantClaims := []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "capabilities", "idtyp", "allowedResources", "version", "client_id"}
+			if len(claims) != len(wantClaims) {
+				t.Fatalf("claims_supported = %#v, want %v", claims, wantClaims)
+			}
+			for i, name := range wantClaims {
+				if claims[i] != name {
+					t.Fatalf("claims_supported[%d] = %v, want %q", i, claims[i], name)
+				}
+			}
 			algsList, ok := doc["id_token_signing_alg_values_supported"].([]any)
 			if !ok {
 				t.Fatalf("signing algs missing: %#v", doc)
@@ -456,6 +472,152 @@ func TestTokenEndpointRoundTripValidatedByGolangJWT(t *testing.T) {
 				t.Fatalf("roles = %#v, want [admin dev]", claims["roles"])
 			}
 		})
+	}
+}
+
+func TestOAuthV2TokenEndpointMintsClientClaims(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v2/oauth/token?%20Scope=capability1,capability2", nil)
+	if err != nil {
+		t.Fatalf("create OAuth request: %v", err)
+	}
+	req.Header.Set("X-Client-Id", "client-id")
+	req.Header.Set("X-Client-Secret", "REDACTED")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST /v2/oauth/token: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read OAuth response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+
+	var minted tokenfactory.Response
+	if err := json.Unmarshal(data, &minted); err != nil {
+		t.Fatalf("decode OAuth response: %v", err)
+	}
+	if minted.TokenType != "Bearer" || minted.AccessToken == "" || minted.ExpiresIn <= 0 {
+		t.Fatalf("unexpected OAuth response: %#v", minted)
+	}
+	if strings.Contains(minted.AccessToken, "REDACTED") {
+		t.Fatal("client secret was included in the access token")
+	}
+
+	set := fetchJWKS(t, ts.URL+"/.well-known/jwks.json")
+	parser := jwt5.NewParser(jwt5.WithValidMethods([]string{"RS256"}), jwt5.WithIssuer(testIssuer))
+	parsed, err := parser.Parse(minted.AccessToken, func(tk *jwt5.Token) (any, error) {
+		kid, _ := tk.Header["kid"].(string)
+		key, ok := set.LookupKeyID(kid)
+		if !ok {
+			return nil, fmt.Errorf("unknown kid %q", kid)
+		}
+		return exportPublicKey(t, key)
+	})
+	if err != nil {
+		t.Fatalf("invalid OAuth access token: %v", err)
+	}
+	claims := parsed.Claims.(jwt5.MapClaims)
+	if claims["sub"] != "client-id" || claims["client_id"] != "client-id" {
+		t.Fatalf("client identity claims = sub:%v client_id:%v", claims["sub"], claims["client_id"])
+	}
+	audience, ok := claims["aud"].([]any)
+	if !ok || len(audience) != 1 || audience[0] != "client" || claims["idtyp"] != "app" || claims["iss"] != testIssuer || claims["version"] != "2.0" {
+		t.Fatalf("unexpected standard OAuth claims: %#v", claims)
+	}
+	capabilities, ok := claims["capabilities"].([]any)
+	if !ok || len(capabilities) != 2 || capabilities[0] != "capability1" || capabilities[1] != "capability2" {
+		t.Fatalf("capabilities = %#v, want [capability1 capability2]", claims["capabilities"])
+	}
+	resources, ok := claims["allowedResources"].(map[string]any)
+	if !ok {
+		t.Fatalf("allowedResources = %#v", claims["allowedResources"])
+	}
+	partners, ok := resources["allowedPartners"].([]any)
+	if !ok || len(partners) != 1 || partners[0] != "partner" {
+		t.Fatalf("allowedPartners = %#v, want [partner]", resources["allowedPartners"])
+	}
+	for _, name := range []string{"iat", "nbf", "exp"} {
+		if _, ok := claims[name]; !ok {
+			t.Errorf("claim %q is missing", name)
+		}
+	}
+	if jti, ok := claims["jti"].(string); !ok || len(jti) != 36 {
+		t.Errorf("jti = %#v, want UUID-formatted string", claims["jti"])
+	}
+}
+
+func TestOAuthV2TokenEndpointRequiresClientIDAndScope(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+	tests := []struct {
+		name string
+		url  string
+		id   string
+	}{
+		{name: "missing client ID", url: ts.URL + "/v2/oauth/token?Scope=capability1"},
+		{name: "missing scope", url: ts.URL + "/v2/oauth/token", id: "client-id"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, tt.url, nil)
+			if err != nil {
+				t.Fatalf("create request: %v", err)
+			}
+			if tt.id != "" {
+				req.Header.Set("X-Client-Id", tt.id)
+			}
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatalf("POST OAuth token: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestOAuthV2TokenEndpointMapsNoActiveKeyToUnavailable(t *testing.T) {
+	ring := &noActiveKeyRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	server := New(ring, factory, testIssuer, "test-version", 100, 200)
+	req := httptest.NewRequest(http.MethodPost, "/v2/oauth/token?scope=read", nil)
+	req.Header.Set("X-Client-Id", "client-id")
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestJWKByKIDReturnsInternalServerErrorForRingFailure(t *testing.T) {
+	ring := &failingJWKSRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	server := New(ring, factory, testIssuer, "test-version", 100, 200)
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json/kid", nil)
+	w := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestOAuthCapabilitiesIgnoresOtherParametersAndEmptyValues(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/?other=ignored&%20SCOPE%20=read,,write&scope=%20,%20", nil)
+	capabilities := oauthCapabilities(req)
+	want := []string{"read", "write"}
+	if !reflect.DeepEqual(capabilities, want) {
+		t.Fatalf("oauthCapabilities() = %v, want %v", capabilities, want)
 	}
 }
 

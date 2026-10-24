@@ -213,6 +213,27 @@ Rules:
 Error responses are `{"error": "<message>"}` with status `400` (bad JSON, unsupported alg,
 lifetime cap exceeded), `405` (wrong method), or `503` (no active signing key).
 
+### `POST /v2/oauth/token`
+
+Mints a v2-style token from a client ID and comma-separated capability scope:
+
+```sh
+curl --request POST \
+  --url 'http://127.0.0.1:8080/v2/oauth/token?Scope=capability1,capability2' \
+  --header 'X-Client-Id: client-id' \
+  --header 'X-Client-Secret: REDACTED' \
+  --header 'accept: application/json'
+```
+
+The response uses the same `{access_token, token_type, expires_in}` envelope as `POST /token`.
+The signed token includes `sub`, `client_id`, `aud: ["client"]`, `idtyp: "app"`, `version: "2.0"`,
+the requested `capabilities`, and standard `iss`, `iat`, `nbf`, `exp`, and unique `jti` claims.
+`allowedResources.allowedPartners` currently contains the example value `partner`.
+
+This is test tooling, not client authentication: `X-Client-Secret` is accepted but not validated,
+requested capabilities are not checked against a registry, and partner policy is not configurable.
+Do not expose this endpoint as a production OAuth service.
+
 Example — deliberately broken token for a rejection test:
 
 ```sh

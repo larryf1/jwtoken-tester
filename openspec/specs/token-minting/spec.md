@@ -18,6 +18,10 @@ The `POST /token` endpoint SHALL accept a JSON body and return a signed JWS comp
 - **THEN** the minted token carries those claims
 - **AND** the response `expires_in` equals the token lifetime in seconds
 
+#### Scenario: Versioned OAuth token carries granted capabilities
+- **WHEN** a versioned OAuth token request authenticates a client and requests capabilities through the `Scope` parameter
+- **THEN** the minted token is versioned and carries the granted capabilities and allowed resources
+
 ### Requirement: Standard claims are injected unless provided
 The system SHALL inject `iss`, `iat`, and `nbf` when absent. Explicit values in `claims` SHALL win over injected defaults, including an override of `iss`.
 
