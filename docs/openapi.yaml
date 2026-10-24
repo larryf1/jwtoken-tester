@@ -206,6 +206,70 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /v2/oauth/token:
+    post:
+      tags: [Tokens]
+      summary: Mint a v2 OAuth-style JWT
+      description: |
+        Mints a signed v2 token using `X-Client-Id` and the comma-separated `Scope` query
+        parameter. Requested scopes are copied into the token's `capabilities` claim.
+        The JWT also includes `sub`, `aud`, `idtyp`, `allowedResources`, `version`,
+        `client_id`, and the standard `iss`, `iat`, `nbf`, `exp`, and `jti` claims.
+        This test issuer does not validate `X-Client-Secret`; `allowedPartners` is the
+        fixed example value `partner`.
+      operationId: mintOAuthV2Token
+      parameters:
+        - name: Scope
+          in: query
+          required: true
+          description: Comma-separated capabilities to place in the token.
+          schema:
+            type: string
+          example: capability1,capability2
+        - name: X-Client-Id
+          in: header
+          required: true
+          schema:
+            type: string
+          example: client-id
+        - name: X-Client-Secret
+          in: header
+          required: false
+          description: Accepted for request compatibility but not validated by this test issuer.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Token minted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        "400":
+          description: Missing client ID or scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: No active signing key available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
 components:
   schemas:
     IndexResponse:
@@ -230,6 +294,7 @@ components:
             - "GET /.well-known/jwks.json/{kid}"
             - "GET /.well-known/openid-configuration"
             - "POST /token"
+            - "POST /v2/oauth/token"
 
     HealthResponse:
       type: object

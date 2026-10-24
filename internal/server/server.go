@@ -6,8 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/larryf1/jwtoken-tester/internal/keyring"
-	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/larryf1/jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
 	"golang.org/x/time/rate"
 )
 
@@ -94,6 +95,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/jwks.json/", s.handleJWKByKID)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("POST /token", s.handleToken)
+	mux.HandleFunc("POST /v2/oauth/token", s.handleOAuthToken)
 
 	return s.securityHeaders(s.rateLimit(s.requestID(mux)))
 }
@@ -170,6 +172,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			"GET /.well-known/jwks.json/{kid}",
 			"GET /.well-known/openid-configuration",
 			"POST /token",
+			"POST /v2/oauth/token",
 		},
 	})
 }
@@ -254,12 +257,13 @@ func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issuer":                                s.Issuer,
 		"jwks_uri":                              base + "/.well-known/jwks.json",
-		"token_endpoint":                        base + "/token",
+		"token_endpoint":                        base + "/v2/oauth/token",
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": algStrs,
 		"response_types_supported":              []string{"token"},
 		"claims_supported": []string{
 			"iss", "sub", "aud", "exp", "nbf", "iat", "jti",
+			"capabilities", "idtyp", "allowedResources", "version", "client_id",
 		},
 	})
 }
@@ -305,6 +309,90 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		"has_custom_headers": len(req.Headers) > 0,
 	})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
+	clientID := strings.TrimSpace(r.Header.Get("X-Client-Id"))
+	if clientID == "" {
+		writeError(w, http.StatusBadRequest, "X-Client-Id is required")
+		return
+	}
+
+	capabilities := oauthCapabilities(r)
+	if len(capabilities) == 0 {
+		writeError(w, http.StatusBadRequest, "Scope is required")
+		return
+	}
+
+	jti, err := generateJTI()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate token ID")
+		return
+	}
+
+	claims := map[string]any{
+		"sub":          clientID,
+		"aud":          "client",
+		"capabilities": capabilities,
+		"idtyp":        "app",
+		"allowedResources": map[string]any{
+			"allowedPartners": []string{"partner"},
+		},
+		"version":   "2.0",
+		"jti":       jti,
+		"client_id": clientID,
+	}
+	resp, err := s.Factory.Mint(&tokenfactory.Request{Claims: claims})
+	if err != nil {
+		s.logTokenEvent(r, "token_mint_failed", map[string]any{"error": err.Error()})
+		switch {
+		case errors.Is(err, tokenfactory.ErrInvalidRequest),
+			errors.Is(err, tokenfactory.ErrUnsupportedAlg),
+			errors.Is(err, tokenfactory.ErrTTLTooLong):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, keyring.ErrNoActiveKey):
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	signer, _ := s.ring.Signer(keyring.AlgRS256)
+	s.logTokenEvent(r, "token_minted", map[string]any{
+		"alg":        string(keyring.AlgRS256),
+		"kid":        signer.Kid(),
+		"expires_in": resp.ExpiresIn,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func oauthCapabilities(r *http.Request) []string {
+	var capabilities []string
+	for key, values := range r.URL.Query() {
+		if !strings.EqualFold(strings.TrimSpace(key), "scope") {
+			continue
+		}
+		for _, value := range values {
+			for _, capability := range strings.Split(value, ",") {
+				if capability = strings.TrimSpace(capability); capability != "" {
+					capabilities = append(capabilities, capability)
+				}
+			}
+		}
+	}
+	return capabilities
+}
+
+func generateJTI() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40
+	bytes[8] = (bytes[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(bytes)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:]), nil
 }
 
 func (s *Server) logTokenEvent(r *http.Request, event string, attrs map[string]any) {

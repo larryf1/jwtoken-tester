@@ -15,9 +15,8 @@ import (
 	"time"
 
 	jwt5 "github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v4/jwk"
-
 	"github.com/larryf1/jwtoken-tester/internal/keyring"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
 const testIssuer = "https://issuer.test.example"
@@ -210,6 +209,54 @@ func TestMintExplicitClaimsOverrideDefaults(t *testing.T) {
 	aud, ok := claims["aud"].([]any)
 	if !ok || len(aud) != 2 || aud[0] != "svc-a" || aud[1] != "svc-b" {
 		t.Fatalf("aud = %#v, want [svc-a svc-b]", claims["aud"])
+	}
+}
+
+func TestMintVersionedOAuthClaims(t *testing.T) {
+	f, ring := newTestFactory(t, keyring.AlgRS256)
+	resp, err := f.Mint(&Request{Claims: map[string]any{
+		"sub":          "client-id",
+		"aud":          []string{"client"},
+		"capabilities": []string{"capability1", "capability2"},
+		"idtyp":        "app",
+		"allowedResources": map[string]any{
+			"allowedPartners": []string{"partner"},
+		},
+		"version":   "2.0",
+		"jti":       "test-jti",
+		"client_id": "client-id",
+	}})
+	if err != nil {
+		t.Fatalf("Mint() error = %v", err)
+	}
+
+	claims := mustParseRS256(t, ring, resp.AccessToken)
+	if claims["sub"] != "client-id" || claims["client_id"] != "client-id" {
+		t.Fatalf("client identity claims = sub:%v client_id:%v", claims["sub"], claims["client_id"])
+	}
+	if claims["version"] != "2.0" || claims["idtyp"] != "app" || claims["jti"] != "test-jti" {
+		t.Fatalf("versioned claims = %#v", claims)
+	}
+	audience, ok := claims["aud"].([]any)
+	if !ok || len(audience) != 1 || audience[0] != "client" {
+		t.Fatalf("aud = %#v, want [client]", claims["aud"])
+	}
+	capabilities, ok := claims["capabilities"].([]any)
+	if !ok || len(capabilities) != 2 || capabilities[0] != "capability1" || capabilities[1] != "capability2" {
+		t.Fatalf("capabilities = %#v", claims["capabilities"])
+	}
+	resources, ok := claims["allowedResources"].(map[string]any)
+	if !ok {
+		t.Fatalf("allowedResources = %#v", claims["allowedResources"])
+	}
+	partners, ok := resources["allowedPartners"].([]any)
+	if !ok || len(partners) != 1 || partners[0] != "partner" {
+		t.Fatalf("allowedPartners = %#v", resources["allowedPartners"])
+	}
+	for _, name := range []string{"iss", "iat", "nbf", "exp"} {
+		if _, ok := claims[name]; !ok {
+			t.Fatalf("missing standard claim %q", name)
+		}
 	}
 }
 
