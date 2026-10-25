@@ -1,0 +1,56 @@
+# yaml-language-server: $schema=https://registry.semrel.io/schemas/core/v1.json
+# semrel configuration — https://semrel.io/guide/configuration/
+
+schemaVersion: 1
+
+# Branches that trigger a release.
+branches:
+  - name: main
+
+tagPrefix: "v"
+
+# Commit type → SemVer bump. Breaking changes (type! / BREAKING CHANGE:) always → major.
+rules:
+  - type: feat
+    bump: minor
+  - type: fix
+    bump: patch
+  - type: perf
+    bump: patch
+  - type: revert
+    bump: patch
+
+# The changelog plugin owns CHANGELOG.md generation; Semrel commits all prepared
+# metadata before creating the version tag.
+commit_changelog: false
+
+plugins:
+  - uses: "@semrel/condition-github-actions"
+    phase: condition
+  - uses: "@semrel/generator-changelog-md"
+    phase: pre-tag
+    args:
+      changelog_file: CHANGELOG.md
+      keep_releases: "10000"
+  - uses: "@semrel/updater-replace"
+    phase: pre-tag
+    args:
+      replacements: |
+        - files: VERSION
+          from: '^[0-9]+\.[0-9]+\.[0-9]+$'
+          flags: m
+          to: '${nextRelease.version}'
+          results:
+            - file: VERSION
+              hasChanged: true
+              numMatches: 1
+              numReplacements: 1
+        - files: docs/openapi.yaml
+          from: '^  version: "[0-9]+\.[0-9]+\.[0-9]+"$'
+          flags: m
+          to: '  version: "${nextRelease.version}"'
+          results:
+            - file: docs/openapi.yaml
+              hasChanged: true
+              numMatches: 1
+              numReplacements: 1

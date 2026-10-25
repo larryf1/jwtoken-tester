@@ -51,4 +51,5 @@ settings:
   footer-leading-blank:
     flags: {}
 disable-default-ignores: false
-ignores: []
+ignores:
+  - "^chore\\(deps\\): " # Escaped regex matching your failing Dependabot commit
