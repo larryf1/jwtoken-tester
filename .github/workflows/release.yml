@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Run go-semantic-release in dry mode (no writes, publish skipped)'
+        description: 'Preview the Semrel release (no writes or publication)'
         required: false
         type: boolean
         default: false
@@ -19,12 +19,13 @@ env:
 jobs:
   version:
     runs-on: ubuntu-latest
-    # semantic-release pushes the release commit and tag back to the repo.
+    # Semrel prepares a local metadata commit/tag; this job verifies and pushes them.
     permissions:
       contents: write
     outputs:
       release: ${{ steps.capture.outputs.release }}
       version: ${{ steps.capture.outputs.version }}
+      tag: ${{ steps.capture.outputs.tag }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,65 +39,92 @@ jobs:
         with:
           go-version: '1.27'
 
+      - name: Restore pinned Semrel plugins
+        run: go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 plugin restore
+
+      - name: Validate Semrel updater rules
+        if: inputs.dry_run == true
+        run: go run ./tools/semrel-preflight
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config commit.gpgsign false
+          git config tag.gpgSign false
 
-      - name: Run go-semantic-release
+      - name: Run Semrel
+        id: semrel
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SEMREL_ANALYTICS_FILE: /dev/null
         run: |
           if [ "${{ inputs.dry_run }}" == "true" ]; then
-            go run github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release@v2.31.0 \
-              --allow-no-changes \
-              --changelog CHANGELOG.md \
-              --prepend-changelog \
-              --dry
+            go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 release --dry-run --github-output
           else
-            go run github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release@v2.31.0 \
-              --allow-no-changes \
-              --changelog CHANGELOG.md \
-              --prepend-changelog
+            go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 release --github-output
           fi
 
-      - name: Verify CHANGELOG.md updated
-        if: inputs.dry_run != true
+      - name: Capture release result
+        id: capture
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          SEMREL_RELEASED: ${{ steps.semrel.outputs.released }}
+          SEMREL_VERSION: ${{ steps.semrel.outputs.version }}
+          SEMREL_TAG: ${{ steps.semrel.outputs.tag }}
         run: |
-          if [ -f CHANGELOG.md ]; then
-            echo "CHANGELOG.md updated:"
-            head -3 CHANGELOG.md
-          else
-            echo "CHANGELOG.md not found"
+          if [ "$DRY_RUN" == "true" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version=$SEMREL_VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=$SEMREL_TAG" >> "$GITHUB_OUTPUT"
+            if [ -n "$SEMREL_VERSION" ]; then
+              echo "Dry run candidate: $SEMREL_TAG"
+            else
+              echo "Dry run found no release candidate."
+            fi
+            exit 0
+          fi
+
+          if [ "$SEMREL_RELEASED" != "true" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "Semrel found no release; skipping publish."
+            exit 0
+          fi
+
+          if [[ ! "$SEMREL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Semrel reported an invalid stable release version: $SEMREL_VERSION" >&2
+            exit 1
+          fi
+          if [ "$SEMREL_TAG" != "v$SEMREL_VERSION" ]; then
+            echo "Semrel tag $SEMREL_TAG does not match version $SEMREL_VERSION." >&2
             exit 1
           fi
 
-      - name: Capture release version
-        id: capture
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$SEMREL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$SEMREL_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release metadata on tag
+        if: steps.capture.outputs.release == 'true'
+        env:
+          RELEASE_VERSION: ${{ steps.capture.outputs.version }}
+          RELEASE_TAG: ${{ steps.capture.outputs.tag }}
         run: |
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            echo "Dry run - skipping publish."
-            exit 0
-          fi
-          if git describe --tags --exact-match HEAD >/dev/null 2>&1; then
-            TAG=$(git describe --tags --exact-match HEAD)
-            VERSION=${TAG#v}
-            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Tag $TAG is not a semantic version (X.Y.Z). Skipping publish." >&2
-              echo "release=false" >> "$GITHUB_OUTPUT"
-              echo "version=" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            echo "No new version tag on HEAD from go-semantic-release; skipping publish."
-          fi
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$(git rev-parse HEAD)"
+          test "$(git show "${RELEASE_TAG}:VERSION")" = "$RELEASE_VERSION"
+          git show "${RELEASE_TAG}:docs/openapi.yaml" | grep -Fqx "  version: \"${RELEASE_VERSION}\""
+          git show "${RELEASE_TAG}:CHANGELOG.md" | grep -Fq "## v${RELEASE_VERSION} ("
+
+      - name: Push verified release commit and tag
+        if: steps.capture.outputs.release == 'true'
+        env:
+          RELEASE_BRANCH: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ steps.capture.outputs.tag }}
+        run: |
+          git push --atomic origin \
+            "HEAD:refs/heads/${RELEASE_BRANCH}" \
+            "refs/tags/${RELEASE_TAG}"
 
   publish:
     needs: version
@@ -111,7 +139,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: v${{ needs.version.outputs.version }}
+          ref: ${{ needs.version.outputs.tag }}
+
+      - name: Capture release commit
+        id: release_commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -149,8 +181,8 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.version.outputs.version }}
-            REVISION=${{ github.sha }}
-            CREATED=${{ format('yyyy-MM-ddTHH:mm:ssZ', github.event.repository.updated_at) }}
+            REVISION=${{ steps.release_commit.outputs.sha }}
+            CREATED=${{ github.event.repository.updated_at }}
           tags: |
             ${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}
             ${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:latest
