@@ -51,10 +51,7 @@ docker-logs: ## Follow docker-compose logs
 	docker compose -f docker/docker-compose.yml logs -f
 
 docs-openapi: ## Regenerate OpenAPI spec with current version
-	@VERSION=$$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null | sed -e 's/^v//' -e 's/-g/-/'); \
-	if [ -z "$$VERSION" ]; then VERSION="0.0.0-$$(git rev-list --count HEAD)-$$(git rev-parse --short=7 HEAD)"; fi; \
-	sed -i "s/version: \".*\"/version: \"$$VERSION\"/" docs/openapi.yaml; \
-	echo "Updated docs/openapi.yaml to version $$VERSION"
+	@echo "docs-openapi is deprecated; versioning is handled by go-semantic-release"
 
 test: ## Run all unit tests
 	go test ./...

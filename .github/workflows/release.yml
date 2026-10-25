@@ -8,11 +8,6 @@ on:
         required: false
         type: boolean
         default: false
-      version:
-        description: 'Publish an existing vX.Y.Z tag without running go-semantic-release'
-        required: false
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -48,47 +43,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Validate version tag
-        if: inputs.version != ''
-        run: |
-          if [ -z "${{ inputs.version }}" ] || ! git rev-parse -q --verify "refs/tags/v${{ inputs.version }}" >/dev/null; then
-            echo "Tag v${{ inputs.version }} does not exist; nothing to publish." >&2
-            exit 1
-          fi
-          echo "Publishing existing tag v${{ inputs.version }}."
-
       - name: Run go-semantic-release
-        if: inputs.version == ''
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          go run github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release@v2.31.0 \
-            --allow-no-changes \
-            --changelog CHANGELOG.md \
-            --prepend-changelog \
-            --version-file \
-            --dry
-
-      - name: Commit release artifacts, tag, and push
-        if: inputs.dry_run != true && inputs.version == ''
-        run: |
-          set -euo pipefail
-          if [ ! -f .version ]; then
-            echo "No new version; nothing to commit or tag."
-            exit 0
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            go run github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release@v2.31.0 \
+              --allow-no-changes \
+              --changelog CHANGELOG.md \
+              --prepend-changelog \
+              --dry
+          else
+            go run github.com/go-semantic-release/semantic-release/v2/cmd/semantic-release@v2.31.0 \
+              --allow-no-changes \
+              --changelog CHANGELOG.md \
+              --prepend-changelog
           fi
-          VERSION=$(cat .version)
-          echo "$VERSION" > VERSION
-          sed -i "s/version: \".*\"/version: \"$VERSION\"/" docs/openapi.yaml
-          awk '/^# /{c++} c==1 && !/^# \[0/{print} c==2{exit}' CHANGELOG.md > /tmp/notes.md
-          git add CHANGELOG.md VERSION docs/openapi.yaml
-          git commit -m "chore(release): $VERSION [skip ci]" -m "$(cat /tmp/notes.md)"
-          git tag -a "v$VERSION" -m "$(cat /tmp/notes.md)"
-          git push origin main "v$VERSION"
 
       - name: Verify CHANGELOG.md updated
-        if: inputs.dry_run != true && inputs.version == ''
+        if: inputs.dry_run != true
         run: |
           if [ -f CHANGELOG.md ]; then
             echo "CHANGELOG.md updated:"
@@ -101,21 +75,32 @@ jobs:
       - name: Capture release version
         id: capture
         run: |
-          if [ -n "${{ inputs.version }}" ]; then
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "Dry run - skipping publish."
+            exit 0
+          fi
+          if git describe --tags --exact-match HEAD >/dev/null 2>&1; then
+            TAG=$(git describe --tags --exact-match HEAD)
+            VERSION=${TAG#v}
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Tag $TAG is not a semantic version (X.Y.Z). Skipping publish." >&2
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-          elif [ -f .version ] && [ "${{ inputs.dry_run }}" != "true" ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            echo "version=$(cat .version)" >> "$GITHUB_OUTPUT"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           else
             echo "release=false" >> "$GITHUB_OUTPUT"
             echo "version=" >> "$GITHUB_OUTPUT"
-            echo "No new version from go-semantic-release; skipping publish."
+            echo "No new version tag on HEAD from go-semantic-release; skipping publish."
           fi
 
   publish:
     needs: version
-    if: needs.version.outputs.release == 'true' && inputs.dry_run != true
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     # GoReleaser creates the GitHub release; the image is pushed to GHCR.
     permissions:
