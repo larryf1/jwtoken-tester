@@ -12,11 +12,21 @@
         "format_commit_template": "* {{with .Scope}}**{{.}}:** {{end}}{{- .Message}} ([{{trimSHA .SHA}}](https://github.com/larryf1/jwtoken-tester/commit/{{.SHA}}))"
       }
     },
+    "files-updater": {
+      "name": "npm",
+      "options": {
+        "files": [
+          "VERSION",
+          {
+            "path": "docs/openapi.yaml",
+            "type": "yaml",
+            "jsonpath": "$.info.version"
+          }
+        ]
+      }
+    },
     "provider": {
       "name": "github"
-    },
-    "files-updater": {
-      "names": []
     }
   }
 }
