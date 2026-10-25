@@ -12,3 +12,5 @@
 /coverage_tf
 /coverage_server
 /coverage_tf.out
+/.semrel/
+/.semrel-analytics.jsonl

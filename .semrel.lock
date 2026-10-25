@@ -1,0 +1,45 @@
+{
+  "semrelLockVersion": 1,
+  "updatedAt": "2026-10-25T03:27:56Z",
+  "plugins": [
+    {
+      "binaryName": "semrel-plugin-github-actions",
+      "ref": "@semrel/condition-github-actions",
+      "version": "0.3.0",
+      "checksums": {
+        "darwin_amd64": "b93ee1a92c1ab748a9fc900b6a556afbbc8a1f9ee86aed1e51cd3c360d17fbb7",
+        "darwin_arm64": "fe1059970f7a23699667b06a04051b9ebda6df058415bf1906fea5df0ee57c2a",
+        "linux_amd64": "004d02c6dc726e47d88f9fc1c204cf27008e8ee3cb2057282c63523558f24ace",
+        "linux_arm64": "c460d6fc6a82409e444c30c7697efbfa93b3fc48970ebe56c2bf73e7acf4e95d",
+        "windows_amd64": "10f30e46ea50fdf0b1441c22ce58fcaef8fc9c9c62aea08ee28425779956eb50",
+        "windows_arm64": "98f03cace6708edee70f2d99f6b2e4a90838bc8bce302d7aee7cbc9a491d5a53"
+      }
+    },
+    {
+      "binaryName": "semrel-plugin-changelog-md",
+      "ref": "@semrel/generator-changelog-md",
+      "version": "0.8.0",
+      "checksums": {
+        "darwin_amd64": "930753a77e66ae47b821cf8fc19fd387c73df875f0fff4d518fc1effc1d9dfa7",
+        "darwin_arm64": "63ca5d0d68e84ff41177284211a004c7b3440bc166441971f76a57e6b51ce888",
+        "linux_amd64": "225f23784b040aae2e0b9591a185ed8a5a66639549cbefba1cfa29ed9953bc95",
+        "linux_arm64": "0d3c142c2e422d64795573d50d7c0c8165a3708cad56d79c86fdbe0e53d05da9",
+        "windows_amd64": "a35e5f99ee94322ed9375d3c4aa1113e8ea620446f0e3ce7f0b25fa58cafb730",
+        "windows_arm64": "daa40fa2545240dfc1e0f94722f696b73b568374685cf7f8f8452e742a29b12c"
+      }
+    },
+    {
+      "binaryName": "semrel-plugin-updater-replace",
+      "ref": "@semrel/updater-replace",
+      "version": "0.1.0",
+      "checksums": {
+        "darwin_amd64": "c6440d5f770c34fdfc0b869dd0a8d73c2a830ff65b32920cff01053d8939c8d5",
+        "darwin_arm64": "7a72ae6484ec2431fab918709f87d923bab08f9f902eb021383ed5b47368b0de",
+        "linux_amd64": "db596d739068d4b9344291db79b547825f3c7fa1ef0c497f705030ccbad7d579",
+        "linux_arm64": "729cacdcf20424524cb8e6cd063da08df8025cfc2f4925a863c3efba1ab25c14",
+        "windows_amd64": "c7fa8d092e36d10f6930798bbb00a0fdd1217b83a99a5c75ccc66cf69062432c",
+        "windows_arm64": "bb565d89a255d5f24f4da1fd3fa37582a2d1bc8354e8253e7f3f56317b70c13e"
+      }
+    }
+  ]
+}
