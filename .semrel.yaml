@@ -8,6 +8,7 @@ branches:
   - name: main
 
 tagPrefix: "v"
+tag_exists_strategy: error
 
 # Commit type → SemVer bump. Breaking changes (type! / BREAKING CHANGE:) always → major.
 rules:
@@ -20,8 +21,9 @@ rules:
   - type: revert
     bump: patch
 
-# The changelog plugin owns CHANGELOG.md generation; Semrel commits all prepared
-# metadata before creating the version tag.
+# The changelog generator plugin owns CHANGELOG.md. Leaving commit_changelog false
+# stops Semrel's built-in changelog from writing a second entry for the same version;
+# Semrel still auto-commits all files prepared by pre-tag plugins before tagging.
 commit_changelog: false
 
 plugins:
@@ -30,7 +32,7 @@ plugins:
   - uses: "@semrel/generator-changelog-md"
     phase: pre-tag
     args:
-      changelog_file: CHANGELOG.md
+      changelog_file: CHANGELOG.mda
       keep_releases: "10000"
   - uses: "@semrel/updater-replace"
     phase: pre-tag
@@ -54,3 +56,54 @@ plugins:
               hasChanged: true
               numMatches: 1
               numReplacements: 1
+
+  # Push the release commit and tag, then create the GitHub Release with the
+  # Semrel-generated changelog as its notes.
+  - uses: "@semrel/provider-git"
+    phase: release
+    args:
+      remote: origin
+      push_branch: "true"
+  - uses: "@semrel/provider-github"
+    phase: release
+    args:
+      draft: "false"
+      prerelease: "false"
+      comment_on_prs: "true"
+
+  # Build the release artifacts only after the release exists, then attach them.
+  # GoReleaser's own GitHub release is disabled in .goreleaser.yaml.
+  - uses: "@semrel/hook-exec"
+    phase: release
+    args:
+      cmd: goreleaser release --clean
+      timeout: 30m
+  - uses: "@semrel/hook-exec"
+    phase: release
+    args:
+      timeout: 10m
+      cmd: |
+        gh release upload "${SEMREL_TAG_NAME}" \
+          dist/*.tar.gz \
+          dist/*.zip \
+          dist/checksums.txt \
+          --repo "${GITHUB_REPOSITORY}" \
+          --clobber
+
+  # Publish the multi-architecture image from the same source tree. The image is
+  # built and pushed in one buildx invocation, so the publisher-docker plugin
+  # (single local image, no build) does not fit.
+  - uses: "@semrel/hook-exec"
+    phase: release
+    args:
+      timeout: 30m
+      cmd: |
+        docker buildx build \
+          --file docker/Dockerfile \
+          --platform linux/amd64,linux/arm64 \
+          --build-arg VERSION="${SEMREL_VERSION#v}" \
+          --build-arg REVISION="$(git rev-parse HEAD)" \
+          --build-arg CREATED="$(git log -1 --format=%cI)" \
+          --tag "ghcr.io/larryf1/jwtoken-tester:${SEMREL_VERSION#v}" \
+          --tag "ghcr.io/larryf1/jwtoken-tester:latest" \
+          --push .

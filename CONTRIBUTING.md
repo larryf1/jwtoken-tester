@@ -37,7 +37,7 @@ never touch disk, env vars, logs, or HTTP responses.
 
 ## Conventional commits
 
-Release automation (go-semantic-release) derives versions and the changelog
+Release automation (Semrel) derives versions and the changelog
 from commit messages, so the format is **enforced, not just requested**: the PR
 CI job `lint-commits` rejects any commit that does not follow the
 [Conventional Commits](https://www.conventionalcommits.org/) spec (run it
@@ -56,8 +56,8 @@ change is breaking (→ major).
 
 ## Releases
 
-Releases are cut automatically from `main` by go-semantic-release. Versions are
-calculated from the merged conventional commits:
+Releases are cut manually from `main` with Semrel. Versions are calculated from
+the merged conventional commits:
 
 - `feat` → **minor** (e.g. `1.0.0` → `1.1.0`)
 - `fix` → **patch** (e.g. `1.0.0` → `1.0.1`)
@@ -66,10 +66,14 @@ calculated from the merged conventional commits:
 There is no manual version number step — the version is always derived. To cut
 a release, run the [Release](.github/workflows/release.yml) workflow
 (interactively, or with `gh workflow run release.yml`). Set its `dry_run` input
-to preview the next version and notes without writing anything. It bumps the
-version in `VERSION`, updates `CHANGELOG.md`, tags the commit, pushes, and
-publishes binaries + the Docker image. Releases from the tag push flow through
-the [Publish](.github/workflows/publish.yml) workflow.
+to preview the next version and notes without writing anything. A real run
+updates `CHANGELOG.md`, `VERSION`, and `docs/openapi.yaml`, then Semrel's release
+plugins push the release commit and tag to `main` with `RELEASE_TOKEN`, create
+the GitHub Release, build the Go binaries with GoReleaser and attach them to the
+release, and publish the Docker image. If
+`main` is protected, `RELEASE_TOKEN` must be allowed to push. The separate
+[Publish](.github/workflows/publish.yml) workflow is only for ad-hoc development
+images.
 
 ## Developer Certificate of Origin (DCO)
 

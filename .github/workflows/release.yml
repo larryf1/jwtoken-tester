@@ -10,29 +10,32 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
+  packages: write
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: jwtoken-tester
 
 jobs:
-  version:
+  release:
     runs-on: ubuntu-latest
-    # Semrel prepares a local metadata commit/tag; this job verifies and pushes them.
     permissions:
       contents: write
-    outputs:
-      release: ${{ steps.capture.outputs.release }}
-      version: ${{ steps.capture.outputs.version }}
-      tag: ${{ steps.capture.outputs.tag }}
+      packages: write
     steps:
-      - name: Checkout code
+      - name: Checkout main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN }}
           persist-credentials: true
+
+      - name: Require a clean main checkout
+        run: |
+          test "$(git rev-parse --abbrev-ref HEAD)" = "main"
+          test -z "$(git status --porcelain)"
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -42,125 +45,12 @@ jobs:
       - name: Restore pinned Semrel plugins
         run: go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 plugin restore
 
-      - name: Validate Semrel updater rules
-        if: inputs.dry_run == true
-        run: go run ./tools/semrel-preflight
-
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config commit.gpgsign false
           git config tag.gpgSign false
-
-      - name: Run Semrel
-        id: semrel
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          SEMREL_ANALYTICS_FILE: /dev/null
-        run: |
-          if [ "${{ inputs.dry_run }}" == "true" ]; then
-            go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 release --dry-run --github-output
-          else
-            go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 release --github-output
-          fi
-
-      - name: Capture release result
-        id: capture
-        env:
-          DRY_RUN: ${{ inputs.dry_run }}
-          SEMREL_RELEASED: ${{ steps.semrel.outputs.released }}
-          SEMREL_VERSION: ${{ steps.semrel.outputs.version }}
-          SEMREL_TAG: ${{ steps.semrel.outputs.tag }}
-        run: |
-          if [ "$DRY_RUN" == "true" ]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "version=$SEMREL_VERSION" >> "$GITHUB_OUTPUT"
-            echo "tag=$SEMREL_TAG" >> "$GITHUB_OUTPUT"
-            if [ -n "$SEMREL_VERSION" ]; then
-              echo "Dry run candidate: $SEMREL_TAG"
-            else
-              echo "Dry run found no release candidate."
-            fi
-            exit 0
-          fi
-
-          if [ "$SEMREL_RELEASED" != "true" ]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-            echo "version=" >> "$GITHUB_OUTPUT"
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "Semrel found no release; skipping publish."
-            exit 0
-          fi
-
-          if [[ ! "$SEMREL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Semrel reported an invalid stable release version: $SEMREL_VERSION" >&2
-            exit 1
-          fi
-          if [ "$SEMREL_TAG" != "v$SEMREL_VERSION" ]; then
-            echo "Semrel tag $SEMREL_TAG does not match version $SEMREL_VERSION." >&2
-            exit 1
-          fi
-
-          echo "release=true" >> "$GITHUB_OUTPUT"
-          echo "version=$SEMREL_VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$SEMREL_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Verify release metadata on tag
-        if: steps.capture.outputs.release == 'true'
-        env:
-          RELEASE_VERSION: ${{ steps.capture.outputs.version }}
-          RELEASE_TAG: ${{ steps.capture.outputs.tag }}
-        run: |
-          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$(git rev-parse HEAD)"
-          test "$(git show "${RELEASE_TAG}:VERSION")" = "$RELEASE_VERSION"
-          git show "${RELEASE_TAG}:docs/openapi.yaml" | grep -Fqx "  version: \"${RELEASE_VERSION}\""
-          git show "${RELEASE_TAG}:CHANGELOG.md" | grep -Fq "## v${RELEASE_VERSION} ("
-
-      - name: Push verified release commit and tag
-        if: steps.capture.outputs.release == 'true'
-        env:
-          RELEASE_BRANCH: ${{ github.ref_name }}
-          RELEASE_TAG: ${{ steps.capture.outputs.tag }}
-        run: |
-          git push --atomic origin \
-            "HEAD:refs/heads/${RELEASE_BRANCH}" \
-            "refs/tags/${RELEASE_TAG}"
-
-  publish:
-    needs: version
-    if: needs.version.outputs.release == 'true'
-    runs-on: ubuntu-latest
-    # GoReleaser creates the GitHub release; the image is pushed to GHCR.
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          token: ${{ secrets.RELEASE_TOKEN }}
-          fetch-depth: 0
-          ref: ${{ needs.version.outputs.tag }}
-
-      - name: Capture release commit
-        id: release_commit
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.27'
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
-        with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -175,17 +65,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ needs.version.outputs.version }}
-            REVISION=${{ steps.release_commit.outputs.sha }}
-            CREATED=${{ github.event.repository.updated_at }}
-          tags: |
-            ${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:${{ needs.version.outputs.version }}
-            ${{ env.REGISTRY }}/larryf1/${{ env.IMAGE_NAME }}:latest
+          distribution: goreleaser
+          version: '~> v2'
+          install-only: true
+
+      - name: Run Semrel
+        id: semrel
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SEMREL_PLUGIN_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SEMREL_ANALYTICS_FILE: /dev/null
+        run: |
+          if [ "${{ inputs.dry_run }}" == "true" ]; then
+            go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 release --dry-run
+          else
+            go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 release
+          fi

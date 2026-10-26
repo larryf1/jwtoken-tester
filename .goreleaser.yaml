@@ -2,9 +2,10 @@ version: 2
 
 project_name: jwtoken-tester
 
-before:
-  hooks:
-    - go mod tidy
+# GoReleaser only builds the artifacts; @semrel/provider-github creates the
+# GitHub Release and the workflow attaches the artifacts afterwards.
+release:
+  disable: true
 
 builds:
   - id: jwtoken-tester

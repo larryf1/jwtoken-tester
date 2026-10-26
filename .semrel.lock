@@ -1,6 +1,6 @@
 {
   "semrelLockVersion": 1,
-  "updatedAt": "2026-10-25T03:27:56Z",
+  "updatedAt": "2026-10-26T03:10:23Z",
   "plugins": [
     {
       "binaryName": "semrel-plugin-github-actions",
@@ -26,6 +26,45 @@
         "linux_arm64": "0d3c142c2e422d64795573d50d7c0c8165a3708cad56d79c86fdbe0e53d05da9",
         "windows_amd64": "a35e5f99ee94322ed9375d3c4aa1113e8ea620446f0e3ce7f0b25fa58cafb730",
         "windows_arm64": "daa40fa2545240dfc1e0f94722f696b73b568374685cf7f8f8452e742a29b12c"
+      }
+    },
+    {
+      "binaryName": "semrel-plugin-hook-exec",
+      "ref": "@semrel/hook-exec",
+      "version": "0.1.0",
+      "checksums": {
+        "darwin_amd64": "fd730cadf6290c5accf10cbd9eb4b32f51f503bb8a2ad26594e824763634db8e",
+        "darwin_arm64": "8022ca96cf314d17a8947279c49c2cd66b5884bc714dbd464738530a1687bdd9",
+        "linux_amd64": "1e583a1d9a271f16ffaa29413928d799874ad501815cfbb9c3858fac3484087d",
+        "linux_arm64": "053aeea004f88441dc7029580786c3b7680fe186e20d2e12f80e4e6cae5b1eb2",
+        "windows_amd64": "202453d9a0a8b68999d3c436f8e48983e4b295048c36df13c2a4cdefa900c8ba",
+        "windows_arm64": "67ef240f55f250d678edf0c26c6db33d08953199d617db7961e0d836141910b6"
+      }
+    },
+    {
+      "binaryName": "semrel-plugin-git",
+      "ref": "@semrel/provider-git",
+      "version": "0.5.0",
+      "checksums": {
+        "darwin_amd64": "2631623e2c8e51373bf05b3a1e75cc69d76a75271194a67808dd87f5c9591118",
+        "darwin_arm64": "b50f5262d31ac4f3759bc4c466591993aeb273d3ac3857a4beb02c996e4ab5f9",
+        "linux_amd64": "9585d24672da84a6ec1777f752954a691bc3cdd37869052246f9adff7ffef8f2",
+        "linux_arm64": "4d2507a123dcbb4a29be7645fba1b7059adf2f9a42811c81d45c527d14af2b40",
+        "windows_amd64": "fdbba4cdb0f55e9a1daf2a071012e6729685aa9d9fddf0936ebf9f0901d2de35",
+        "windows_arm64": "2340a8db74606152892620daf9448f5432ad4a38a5a3914448be65829ddb11c8"
+      }
+    },
+    {
+      "binaryName": "semrel-plugin-github",
+      "ref": "@semrel/provider-github",
+      "version": "0.6.0",
+      "checksums": {
+        "darwin_amd64": "b93696987ea281b249e168bcd8d30d9afb6605ea61b8996ce6d63363e42f57c8",
+        "darwin_arm64": "ab6cf2d5bd0850222253178a6ea6fd246cab3d95a626799eda65cb06e7475b88",
+        "linux_amd64": "257a7b5eff9a9e71fc8095b02d3b8e25ad646337aede92b11d2c7a81956571ed",
+        "linux_arm64": "04703ddc7579adfabc01af286c4fce87ceb1e96c1d09acafa5eeb4ddb03b9066",
+        "windows_amd64": "e11304b7c31a3f638ea5ac7ccdedff92eeb4944fa642e1987562fd7e492d11f4",
+        "windows_arm64": "de3d020a6af12ce61f214ca15e9ce85c60637fca1e28617b8f80d01ed865ae50"
       }
     },
     {
