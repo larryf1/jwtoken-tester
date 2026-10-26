@@ -14,3 +14,7 @@
 /coverage_tf.out
 /.semrel/
 /.semrel-analytics.jsonl
+
+# Semrel runtime / lock files
+.semrel-release.lock
+CHANGELOG.mda
