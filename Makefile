@@ -77,7 +77,7 @@ lint: fmt-check ## golangci-lint + gofmt formatting check
 	golangci-lint run ./...
 
 lint-install: ## Install golangci-lint (pinned to CI version)
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
 
 # Commit range for lint-commits (CI overrides both with the PR base/head SHAs).
 LINT_BASE ?= origin/main
