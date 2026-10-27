@@ -13,6 +13,17 @@ The container image SHALL contain a statically linked `jwtoken-tester` binary, r
 - **WHEN** a container is started from the image
 - **THEN** the process runs `/jwtoken-tester serve` as a non-root user and listens on the configured address
 
+### Requirement: Container defaults and version metadata
+The image SHALL default `LISTEN` to `0.0.0.0:8080` so a published port is reachable without extra configuration. It SHALL be tagged as `ghcr.io/larryf1/jwtoken-tester:<computed-version>` (plus `latest` for local builds), and the image tag, OCI version label, and the version reported by the running binary SHALL all come from the same computed version.
+
+#### Scenario: Published port works without extra environment
+- **WHEN** the image is started with `docker run -p 8080:8080` and no `LISTEN` variable
+- **THEN** the server listens on `0.0.0.0:8080` and the published port reaches it
+
+#### Scenario: Image version matches /version
+- **WHEN** an image built by `make docker-build` is started
+- **THEN** its tag, `org.opencontainers.image.version` label, and `/version` response all report the same computed version
+
 ### Requirement: OCI metadata labels
 The image SHALL carry `org.opencontainers.image` labels for title, description, version, revision, source, license, and created time.
 

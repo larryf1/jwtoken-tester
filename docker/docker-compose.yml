@@ -1,10 +1,13 @@
-version: '3.8'
-
 services:
   jwtoken-tester:
+    image: ghcr.io/larryf1/jwtoken-tester:${VERSION:-latest}
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        VERSION: ${VERSION:-}
+        REVISION: ${REVISION:-unknown}
+        CREATED: ${CREATED:-unknown}
     container_name: jwtoken-tester
     ports:
       - "8080:8080"
@@ -17,7 +20,7 @@ services:
       - GRACE_PERIOD=25h
       - ALGORITHMS=RS256,ES256,EdDSA
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      test: ["CMD", "/jwtoken-tester", "healthcheck"]
       interval: 10s
       timeout: 5s
       retries: 5

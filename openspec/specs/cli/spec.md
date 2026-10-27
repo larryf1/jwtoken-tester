@@ -29,11 +29,15 @@ The `serve` command SHALL start the issuer on the configured address, log a test
 - **THEN** the server logs a warning that the test issuer is exposed on the network
 
 ### Requirement: Version resolution
-The reported version SHALL be the value baked into the binary at build time, falling back to the `VERSION` file, and finally to `dev` when neither is available.
+The reported version SHALL be the value baked into the binary at build time, falling back to the `VERSION` file, then to Go build metadata, and SHALL never report a `dev` placeholder.
 
-#### Scenario: Version falls back to dev
+#### Scenario: Baked version is reported
+- **WHEN** the binary is built with `-X main.Version=<version>`
+- **THEN** the version endpoints report `<version>`
+
+#### Scenario: Version falls back to build metadata
 - **WHEN** the binary is built without a baked version and no `VERSION` file exists
-- **THEN** the version endpoints report `dev`
+- **THEN** the version endpoints report a version derived from Go build metadata or the module version, never `dev`
 
 ### Requirement: print-token mints one token to stdout
 The `print-token` command SHALL mint a single token from its flags and print only the `access_token` to stdout. Invalid flags, unparsable JSON, or minting errors SHALL print an error and exit non-zero.

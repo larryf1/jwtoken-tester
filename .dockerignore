@@ -3,6 +3,11 @@
 .idea
 .github
 .vscode
+.semrel
+.opencode
+.junie
+.secrets
+openspec
 bin
 dist
 coverage

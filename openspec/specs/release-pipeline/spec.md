@@ -1,7 +1,7 @@
 # release-pipeline Specification
 
 ## Purpose
-Owns how this repository derives version numbers and cuts releases: conventional-commit analysis by Semrel, changelog and version-file preparation, the release commit/tag, and the Semrel release-phase plugins that push refs, build Go binaries, publish the GitHub Release, and publish the container image. Pre-release version strings continue to come from the existing `git describe` shell expression.
+Owns how this repository derives version numbers and cuts releases: conventional-commit analysis by Semrel, changelog and version-file preparation, the release commit/tag, and the Semrel release-phase plugins that push refs, build Go binaries, publish the GitHub Release, and publish the container image. Pre-release version strings continue to come from the shared `scripts/version.sh` git-describe computation.
 
 ## Requirements
 
@@ -10,7 +10,7 @@ For non-release builds the version SHALL be `X.Y.Z` on a release tag, otherwise 
 
 #### Scenario: All consumers agree on pre-release versions
 - **WHEN** the Makefile and the publish workflow compute a pre-release version for the same commit
-- **THEN** they produce the identical string, because both use the same `git describe` expression
+- **THEN** they produce the identical string, because both call the shared `scripts/version.sh`
 
 #### Scenario: Build from a release tag
 - **WHEN** the version is computed on the commit tagged `v1.2.3`

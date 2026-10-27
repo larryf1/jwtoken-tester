@@ -91,7 +91,7 @@ The **Release** workflow does everything in one manual run from `main`:
    and the multi-architecture Docker image is built and pushed to GHCR as
    `X.Y.Z` and `latest` in the same run.
 
-The **Publish (dev build)** workflow is for ad-hoc image pushes from any
+The **Publish (development build)** workflow is for ad-hoc image pushes from any
 branch; it uses the development-build version scheme below.
 
 ### Versioning
@@ -117,16 +117,20 @@ following the [`git describe`][git-describe] scheme:
 
 The image is published to
 [`ghcr.io/larryf1/jwtoken-tester`](https://github.com/larryf1/jwtoken-tester/pkgs/container/jwtoken-tester);
-the **Release** workflow also tags the release image `latest`.
+the **Release** workflow also tags the release image `latest`. `make docker-build`
+tags both the computed version and `latest`, and passes the same version to the
+binary and the OCI `version` label.
 
 Images carry OCI label metadata ([`org.opencontainers.image.*`][oci-labels])
 — `version`, `revision` (commit SHA), `source`, and `created` — so the exact
 code a container runs is inspectable with `docker inspect`.
 
-`make build` and `make run` use the exact same scheme: the version is derived
-from `git describe` and baked into the binary via `-ldflags "-X main.Version=…"`.
-Running the binary through `go run` (no build flags) falls back to the `VERSION`
-file updated by Semrel, else `dev`.
+`make build`, `make run`, `make docker-build`, and the **Publish** workflow all
+use the same `scripts/version.sh`: the version is derived from `git describe`,
+baked into the binary via `-ldflags "-X main.Version=…"`, and used for the image
+tag and OCI label. Running the binary through `go run` (no build flags) falls
+back to the `VERSION` file updated by Semrel, then to Go build metadata; it never
+reports a placeholder `dev` version.
 
 [git-describe]: https://git-scm.com/docs/git-describe
 [oci-labels]: https://github.com/opencontainers/image-spec/blob/main/annotations.md#pre-defined-annotation-keys

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,7 +22,7 @@ import (
 	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
 )
 
-var Version = "dev"
+var Version string
 
 type serveConfig struct {
 	Listen         string
@@ -58,6 +59,8 @@ func main() {
 		runServe(logger, os.Args[2:])
 	case "print-token":
 		runPrintToken(logger, os.Args[2:])
+	case "healthcheck":
+		runHealthcheck(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -79,6 +82,7 @@ Usage:
 Commands:
   serve         Run the HTTP server (default)
   print-token   Generate a single JWT and print it to stdout
+  healthcheck   Probe the local server's health endpoint
   help          Show this help
 
 Examples:
@@ -103,11 +107,7 @@ func runServe(logger *slog.Logger, args []string) {
 		RateLimitBurst: envInt("RATE_LIMIT_BURST", 200),
 	}
 
-	if Version == "dev" {
-		if versionBytes, err := os.ReadFile("VERSION"); err == nil {
-			Version = strings.TrimSpace(string(versionBytes))
-		}
-	}
+	Version = resolveVersion()
 
 	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
 	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "external issuer / base URL (env ISSUER)")
@@ -168,6 +168,52 @@ func runServe(logger *slog.Logger, args []string) {
 		logger.Error("graceful shutdown failed", "error", err)
 	}
 	logger.Info("stopped; ephemeral signing keys discarded")
+}
+
+// resolveVersion returns the version baked in at build time. Builds without
+// -ldflags fall back to the Semrel-maintained VERSION file, then to Go build
+// metadata. It never returns a "dev" placeholder.
+func resolveVersion() string {
+	if v := strings.TrimSpace(Version); v != "" && v != "dev" {
+		return v
+	}
+	if versionBytes, err := os.ReadFile("VERSION"); err == nil {
+		if v := strings.TrimSpace(string(versionBytes)); v != "" {
+			return v
+		}
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := strings.TrimPrefix(info.Main.Version, "v"); v != "" && v != "(devel)" {
+			return v
+		}
+		if revision := vcsRevision(info); revision != "" {
+			return "0.0.0-" + revision
+		}
+	}
+	return "0.0.0-unknown"
+}
+
+func vcsRevision(info *debug.BuildInfo) string {
+	var revision string
+	var modified bool
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	if revision == "" {
+		return ""
+	}
+	if len(revision) > 7 {
+		revision = revision[:7]
+	}
+	if modified {
+		revision += "-dirty"
+	}
+	return revision
 }
 
 func runPrintToken(logger *slog.Logger, args []string) {
@@ -233,6 +279,51 @@ func runPrintToken(logger *slog.Logger, args []string) {
 	}
 
 	fmt.Println(resp.AccessToken)
+}
+
+// runHealthcheck probes the local /healthz endpoint. It exists so a container
+// healthcheck can use the statically linked binary instead of requiring curl or
+// wget, which distroless images do not provide.
+func runHealthcheck(args []string) {
+	fs := flag.NewFlagSet("healthcheck", flag.ExitOnError)
+
+	url := fs.String("url", "", "health endpoint URL (default derived from LISTEN)")
+	timeout := fs.Duration("timeout", 3*time.Second, "probe timeout")
+
+	if err := fs.Parse(args); err != nil {
+		return
+	}
+
+	target := *url
+	if target == "" {
+		target = healthcheckURL(envStr("LISTEN", "127.0.0.1:8080"))
+	}
+
+	client := &http.Client{Timeout: *timeout}
+	resp, err := client.Get(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: %s returned %s\n", target, resp.Status)
+		os.Exit(1)
+	}
+}
+
+func healthcheckURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://127.0.0.1:8080/healthz"
+	}
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/healthz"
 }
 
 func envStr(key, def string) string {

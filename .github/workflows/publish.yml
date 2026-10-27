@@ -1,4 +1,4 @@
-name: Publish (dev build)
+name: Publish (development build)
 
 on:
   workflow_dispatch:
@@ -21,16 +21,7 @@ jobs:
 
       - name: Extract version
         id: version
-        run: |
-          DESCRIBE=$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null) || true
-          if [[ -n "$DESCRIBE" ]]; then
-            VERSION="${DESCRIBE#v}"
-            VERSION="${VERSION//-g/-}"
-          else
-            COUNT=$(git rev-list --count HEAD)
-            VERSION="0.0.0-${COUNT}-g${GITHUB_SHA::7}"
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(sh scripts/version.sh)" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0

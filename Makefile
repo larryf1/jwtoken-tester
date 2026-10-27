@@ -1,15 +1,11 @@
 BINARY := jwtoken-tester
 MAIN_PKG := ./cmd/jwtoken-tester
 BIN_DIR := bin
-# Same scheme as .github/workflows/publish.yml: release tag vX.Y.Z -> X.Y.Z,
-# otherwise git describe "$X.Y.Z-<n>-<short-sha>" (leading "v" and "g" stripped).
-VERSION := $(shell \
-	describe=$$(git describe --tags --match 'v*' --abbrev=7 2>/dev/null); \
-	if [ -n "$$describe" ]; then \
-		printf '%s' "$$describe" | sed -e 's/^v//' -e 's/-g/-/'; \
-	else \
-		printf '0.0.0-%s-%s' "$$(git rev-list --count HEAD)" "$$(git rev-parse --short=7 HEAD)"; \
-	fi)
+# Version is derived from git by the shared script also used by the Publish
+# workflow, so local builds and CI report the identical value.
+VERSION := $(shell sh scripts/version.sh)
+REVISION := $(shell git rev-parse HEAD 2>/dev/null || printf 'unknown')
+CREATED := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 ifeq ($(OS),Windows_NT)
 EXE_SUFFIX := .exe
@@ -28,19 +24,24 @@ run: build ## Build then run the server
 	$(BIN_DIR)/$(BINARY)$(EXE_SUFFIX) serve
 
 # Docker targets
-DOCKER_IMAGE := jwtoken-tester
+DOCKER_IMAGE ?= ghcr.io/larryf1/jwtoken-tester
 DOCKER_TAG ?= latest
-DOCKER_REGISTRY ?=
 
-docker-build: ## Build distroless Docker image
-	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+docker-build: ## Build distroless Docker image tagged with the computed version
+	docker build -f docker/Dockerfile \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg REVISION=$(REVISION) \
+		--build-arg CREATED=$(CREATED) \
+		-t $(DOCKER_IMAGE):$(VERSION) \
+		-t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 
-docker-push: docker-build ## Push Docker image to registry (set DOCKER_REGISTRY)
-	docker tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(DOCKER_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
-	docker push $(DOCKER_REGISTRY)/$(DOCKER_IMAGE):$(DOCKER_TAG)
+docker-push: docker-build ## Push the computed version and DOCKER_TAG to the registry
+	docker push $(DOCKER_IMAGE):$(DOCKER_TAG)
+	docker push $(DOCKER_IMAGE):$(VERSION)
 
 docker-compose-up: ## Start docker-compose stack (jwtoken-tester + demo service)
-	docker compose -f docker/docker-compose.yml up --build -d
+	VERSION=$(VERSION) REVISION=$(REVISION) CREATED=$(CREATED) \
+		docker compose -f docker/docker-compose.yml up --build -d
 	@echo "jwtoken-tester: http://localhost:8080"
 	@echo "demo-service:   http://localhost:8081"
 

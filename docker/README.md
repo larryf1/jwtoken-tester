@@ -8,8 +8,8 @@ This directory contains Docker configuration for running jwtoken-tester and a de
 # From project root
 make docker-compose-up
 
-# Or directly with docker compose
-docker compose -f docker/docker-compose.yml up --build -d
+# Or directly with docker compose (supply the computed version)
+VERSION=$(sh scripts/version.sh) docker compose -f docker/docker-compose.yml up --build -d
 ```
 
 This starts two services:
@@ -79,11 +79,22 @@ docker compose -f docker/docker-compose.yml down
 ## Building Images Individually
 
 ```bash
-# Build jwtoken-tester image
+# Build jwtoken-tester image (tagged with the computed version and latest)
 make docker-build
-# or
-docker build -f docker/Dockerfile -t jwtoken-tester:latest .
+# or, supplying the version explicitly
+VERSION=$(sh scripts/version.sh)
+docker build -f docker/Dockerfile \
+  --build-arg VERSION="$VERSION" \
+  -t ghcr.io/larryf1/jwtoken-tester:"$VERSION" \
+  -t ghcr.io/larryf1/jwtoken-tester:latest .
 
 # Build demo service image
 docker build -f docker/demo-service/Dockerfile -t demo-service:latest docker/demo-service
+```
+
+The image defaults to `LISTEN=0.0.0.0:8080`, so a published port works without
+extra environment settings:
+
+```bash
+docker run --rm -p 8080:8080 ghcr.io/larryf1/jwtoken-tester:latest
 ```
