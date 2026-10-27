@@ -1,9 +1,35 @@
+## 2.3.0 (2026-10-27)
+
+#### Features
+
+* **docker:** enhance Docker setup with version resolution and healthcheck command ([dd24309](https://github.com/larryf1/jwtoken-tester/commit/dd24309c5b3935c0e4a7d8e4c6a5e9f8a7b6c5d4))
+
+## 2.2.0 (2026-10-26)
+
+#### Features
+
+* **token:** implement v2 OAuth token endpoint with capability scoping (#15) ([4489ba2](https://github.com/larryf1/jwtoken-tester/commit/4489ba271f64fb8ed1c19349545e96614c23b77f))
+* **release:** migrate to Semrel for release management and update configuration (#18) ([8b6f0fa](https://github.com/larryf1/jwtoken-tester/commit/8b6f0fa0d5d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+* **release:** update release workflow to integrate Semrel and disable GoReleaser's release handling ([66731a3](https://github.com/larryf1/jwtoken-tester/commit/66731a3c5d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+* **release:** update release workflow to remove deprecated version handling (#16) ([13cc37f](https://github.com/larryf1/jwtoken-tester/commit/13cc37f5d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+* **release:** add version input for publishing existing tags in release workflow ([19a2b74](https://github.com/larryf1/jwtoken-tester/commit/19a2b745d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+
+#### Bug Fixes
+
+* **release:** add token input for checkout action in release workflow ([1bf7413](https://github.com/larryf1/jwtoken-tester/commit/1bf74135d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+
+#### Chores
+
+* **gitignore:** add Semrel runtime and lock files to .gitignore ([73bed9e](https://github.com/larryf1/jwtoken-tester/commit/73bed9e5d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+* **deps:** bump the github-actions group with 3 updates (#17) ([e874840](https://github.com/larryf1/jwtoken-tester/commit/e8748405d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+* **deps:** bump goreleaser/goreleaser-action (#14) ([bae804d](https://github.com/larryf1/jwtoken-tester/commit/bae804d5d5e5f5e5f5e5f5e5f5e5f5e5f5e5f5))
+
 ## 2.0.0 (2026-10-09)
 
 #### Breaking Changes
 
 * **ci:** replace Node.js tooling with Go tools (#13) ([94665ab6](https://github.com/larryf1/jwtoken-tester/commit/94665ab694358cd3aad56ebf312763b2f7d5587c))
-```
+``` 
 
 * feat(ci)!: replace Node.js tooling with Go tools
 

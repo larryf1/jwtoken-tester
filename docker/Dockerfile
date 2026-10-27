@@ -16,7 +16,7 @@ RUN test -n "$VERSION" || { \
 COPY go.mod go.sum ./
 # go.mod replaces this module with a local directory, so its go.mod must be
 # present before dependency resolution runs.
-COPY third_party/conventionalcommit-parser/go.mod ./third_party/conventionalcommit-parser/go.mod
+
 RUN go mod download
 
 # Copy source code

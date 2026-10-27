@@ -13,7 +13,7 @@ else
 EXE_SUFFIX :=
 endif
 
-.PHONY: all build run test coverage coverage-html lint lint-install lint-commits govulncheck vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
+.PHONY: all build run test coverage coverage-html lint lint-install govulncheck vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
 
 all: lint test build ## Lint, test, then build
 
@@ -56,7 +56,6 @@ docs-openapi: ## Regenerate OpenAPI spec with current version
 
 test: ## Run all unit tests
 	go test ./...
-	go -C third_party/conventionalcommit-parser test ./...
 
 COVERAGE_THRESHOLD ?= 90
 COVER_PKGS := github.com/larryf1/jwtoken-tester/internal/keyring github.com/larryf1/jwtoken-tester/internal/server github.com/larryf1/jwtoken-tester/internal/tokenfactory
@@ -77,19 +76,15 @@ coverage-html: ## Generate coverage.html from the latest coverage run
 lint: fmt-check ## golangci-lint + gofmt formatting check
 	golangci-lint run ./...
 
-lint-install: ## Install golangci-lint
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+lint-install: ## Install golangci-lint (pinned to CI version)
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 
 # Commit range for lint-commits (CI overrides both with the PR base/head SHAs).
 LINT_BASE ?= origin/main
 LINT_HEAD ?= HEAD
 
-lint-commits: ## Lint commits on this branch against the conventional-commit rules
-	@fail=0; \
-	for sha in $$(git log --format=%H $(LINT_BASE)..$(LINT_HEAD)); do \
-		git show -s --format=%B $$sha | go tool commitlint lint || fail=1; \
-	done; \
-	exit $$fail
+lint-commits: ## Lint commits with go-semantic-release (same as CI)
+	go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 commitlint --from $(LINT_BASE) --to $(LINT_HEAD)
 
 govulncheck: ## Scan the module for known vulnerabilities (same as CI)
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

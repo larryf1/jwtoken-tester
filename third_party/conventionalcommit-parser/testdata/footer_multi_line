@@ -1,6 +1,0 @@
-type: description message
-
-footer: multi line footer
-message is here
-
-hash-footer #123

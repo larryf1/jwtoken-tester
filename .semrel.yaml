@@ -21,19 +21,12 @@ rules:
   - type: revert
     bump: patch
 
-# The changelog generator plugin owns CHANGELOG.md. Leaving commit_changelog false
-# stops Semrel's built-in changelog from writing a second entry for the same version;
-# Semrel still auto-commits all files prepared by pre-tag plugins before tagging.
-commit_changelog: false
+# Let semrel commit the changelog.
+commit_changelog: true
 
 plugins:
   - uses: "@semrel/condition-github-actions"
     phase: condition
-  - uses: "@semrel/generator-changelog-md"
-    phase: pre-tag
-    args:
-      changelog_file: CHANGELOG.mda
-      keep_releases: "10000"
   - uses: "@semrel/updater-replace"
     phase: pre-tag
     args:
