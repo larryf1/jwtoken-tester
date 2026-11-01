@@ -13,7 +13,7 @@ else
 EXE_SUFFIX :=
 endif
 
-.PHONY: all build run test coverage coverage-html lint lint-install govulncheck vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
+.PHONY: all build run test coverage coverage-html lint lint-install lint-commits govulncheck vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
 
 all: lint test build ## Lint, test, then build
 
@@ -83,8 +83,12 @@ lint-install: ## Install golangci-lint (pinned to CI version)
 LINT_BASE ?= origin/main
 LINT_HEAD ?= HEAD
 
-lint-commits: ## Lint commits with go-semantic-release (same as CI)
-	go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 commitlint --from $(LINT_BASE) --to $(LINT_HEAD)
+lint-commits: ## Lint commits on this branch against Conventional Commits (same as CI)
+	@fail=0; \
+	for sha in $$(git rev-list --no-merges $(LINT_BASE)..$(LINT_HEAD)); do \
+		git show -s --format=%B $$sha | go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 commitlint --stdin || fail=1; \
+	done; \
+	exit $$fail
 
 govulncheck: ## Scan the module for known vulnerabilities (same as CI)
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
