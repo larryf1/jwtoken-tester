@@ -271,15 +271,11 @@ func (k jwkKey) publicKey() (crypto.PublicKey, error) {
 		if !ok {
 			return nil, fmt.Errorf("unsupported curve %q", k.CRV)
 		}
-		x, err := decodeBigInt(k.X)
+		point, err := encodeUncompressedPoint(curve, k.X, k.Y)
 		if err != nil {
-			return nil, fmt.Errorf("x coordinate: %w", err)
+			return nil, err
 		}
-		y, err := decodeBigInt(k.Y)
-		if err != nil {
-			return nil, fmt.Errorf("y coordinate: %w", err)
-		}
-		return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil
+		return ecdsa.ParseUncompressedPublicKey(curve, point)
 	case "OKP":
 		if k.CRV != "Ed25519" {
 			return nil, fmt.Errorf("unsupported OKP curve %q", k.CRV)
@@ -295,6 +291,25 @@ func (k jwkKey) publicKey() (crypto.PublicKey, error) {
 	default:
 		return nil, fmt.Errorf("unsupported key type %q", k.KTY)
 	}
+}
+
+// encodeUncompressedPoint encodes JWK x and y coordinates as a SEC 1
+// uncompressed point, left-padding each coordinate to the curve size.
+func encodeUncompressedPoint(curve elliptic.Curve, x, y string) ([]byte, error) {
+	size := (curve.Params().BitSize + 7) / 8
+	point := make([]byte, 1+2*size)
+	point[0] = 4 // Uncompressed point form.
+	for i, coord := range []string{x, y} {
+		raw, err := base64.RawURLEncoding.DecodeString(coord)
+		if err != nil {
+			return nil, fmt.Errorf("coordinate: %w", err)
+		}
+		if len(raw) > size {
+			return nil, fmt.Errorf("coordinate length = %d, want at most %d", len(raw), size)
+		}
+		copy(point[1+i*size:1+(i+1)*size], raw)
+	}
+	return point, nil
 }
 
 func decodeBigInt(value string) (*big.Int, error) {
