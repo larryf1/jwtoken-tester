@@ -1,3 +1,21 @@
+## v2.4.0 (2026-11-01)
+
+### Features
+
+* migrate to v2 module path and implement leak-free public API (#21)
+
+### Other Changes
+
+* update CONTRIBUTING.md and README.md for CLI commands and configuration details
+* **deps:** bump docker/login-action from 4.6.0 to 4.7.0 in the github-actions group (#20)
+* **lint:** update golangci-lint to version v2.15.0 and remove configuration file
+* **lint:** add golangci-lint configuration file with selected linters
+* **ci:** update golangci-lint action to use latest version and enable check-latest
+* **lint:** update golangci-lint version to v2.6.2 in CI and Makefile
+* **ci:** specify Go version file in golangci-lint action
+* **lint:** update golangci-lint version to v2.5.0 in CI and Makefile
+* **release:** enable changelog auto-commit and clean up configuration
+
 ## 2.3.0 (2026-10-27)
 
 #### Features
