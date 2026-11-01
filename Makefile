@@ -51,8 +51,8 @@ docker-compose-down: ## Stop docker-compose stack
 docker-logs: ## Follow docker-compose logs
 	docker compose -f docker/docker-compose.yml logs -f
 
-docs-openapi: ## Regenerate OpenAPI spec with current version
-	@echo "docs-openapi is deprecated; versioning is handled by go-semantic-release"
+docs-openapi: ## Deprecated: release automation updates the OpenAPI version
+	@echo "docs-openapi is deprecated; versioning is handled by Semrel"
 
 test: ## Run all unit tests
 	go test ./...

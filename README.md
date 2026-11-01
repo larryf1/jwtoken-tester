@@ -33,10 +33,12 @@ of hacking basic-auth shortcuts into your middleware.
 │  HTTP API                                    │
 │   GET  /                                     │
 │   GET  /healthz                              │
+│   GET  /version                              │
 │   GET  /.well-known/jwks.json                │
 │   GET  /.well-known/jwks.json/{kid}          │
 │   GET  /.well-known/openid-configuration     │
 │   POST /token        ← mint arbitrary JWTs   │
+│   POST /v2/oauth/token ← mint v2-style JWTs  │
 └──────────────────────────────────────────────┘
 ```
 
@@ -140,7 +142,7 @@ reports a placeholder `dev` version.
 Requires Go 1.27+.
 
 ```sh
-go run ./cmd/jwtoken-tester
+go run ./cmd/jwtoken-tester serve
 # INFO listening addr=127.0.0.1:8080 issuer=http://127.0.0.1:8080 ...
 # WARN TEST ISSUER ONLY: keys are generated in memory and never persisted
 ```
@@ -174,6 +176,19 @@ curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:3000/api/things
 
 Point the app under test at the issuer (e.g. env `ISSUER_URL=http://127.0.0.1:8080`) and it will
 pull the JWKS from `/.well-known/jwks.json` like any other IdP.
+
+### CLI commands
+
+The binary has three modes:
+
+- `serve` — run the HTTP issuer (used by the container and `make run`).
+- `print-token` — mint one token and print only the `access_token` to stdout, useful in shell
+  scripts that cannot reach a running server:
+  `jwtoken-tester print-token --claims '{"sub":"user-1","aud":["my-service"]}' --alg ES256`
+- `healthcheck` — probe `/healthz` using the binary itself, so distroless containers do not need
+  `curl` or `wget`.
+
+Run `jwtoken-tester help` for the full flag list.
 
 ### Verifying tokens on jwt.io
 
@@ -270,6 +285,12 @@ inside their grace window are reachable too. An unknown or cleaned-up kid return
 
 Liveness plus the current `active_kids` per algorithm, and an explicit reminder that this is a test issuer.
 
+### `GET /version`
+
+Returns the resolved build version as `{"version":"X.Y.Z"}`. The value comes from the build-time
+`-X main.Version` injection, then the `VERSION` file, then Go build metadata — it never reports a
+placeholder `dev` value.
+
 ## Configuration
 
 Every setting can be passed as an environment variable or the equivalent flag (flag wins):
@@ -283,17 +304,59 @@ Every setting can be passed as an environment variable or the equivalent flag (f
 | `ROTATION_INTERVAL`  | `--rotation-interval` | `30m`                   | key rotation cadence, `0` disables     |
 | `GRACE_PERIOD`       | `--grace-period`      | `25h`                   | retired keys stay published this long  |
 | `ALGORITHMS`         | `--algorithms`        | `RS256,ES256,EdDSA`     | comma-separated algorithms to enable   |
+| `RATE_LIMIT_RPS`     | `--rate-limit-rps`    | `100`                   | per-IP requests per second             |
+| `RATE_LIMIT_BURST`   | `--rate-limit-burst`  | `200`                   | per-IP burst allowance                 |
 
 Durations use Go syntax: `30s`, `45m`, `12h`. Keep `GRACE_PERIOD ≥ MAX_TTL` so tokens minted
 just before a rotation stay verifiable until they expire.
+
+Per-IP rate limiting honors the first `X-Forwarded-For` entry when present, so run this behind a
+proxy only if you trust that header. Non-positive rate-limit values fall back to the defaults above.
+
+## Embedding in Go tests
+
+`pkg/tester` starts an in-process issuer over `httptest`, registers cleanup
+automatically, and returns the server handle plus its issuer URL. No binary,
+port reservation, or external process is required.
+
+```go
+package auth_test
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/larryf1/jwtoken-tester/pkg/tester"
+)
+
+func TestProtectedEndpoint(t *testing.T) {
+	srv, issuer := tester.NewServer(t, tester.WithAlgorithms("RS256"))
+
+	resp, err := srv.Client().Post(issuer+"/token", "application/json",
+		strings.NewReader(`{"claims":{"sub":"user-123","aud":["my-service"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Decode access_token from resp.Body, then point the service under test at
+	// `issuer` and send the token as a Bearer credential — exactly as you would
+	// with a real IdP.
+}
+```
+
+Options mirror the server settings: `WithAlgorithms`, `WithIssuer`, `WithDefaultTTL`,
+`WithMaxTTL`, `WithRotationInterval`, `WithGracePeriod`, and `WithRateLimit`.
 
 ## Development
 
 ```sh
 make build   # compile to bin/jwtoken-tester(.exe)
-make test    # go test ./... (+ third_party parser tests)
-make lint    # go vet + gofmt formatting check (make fmt fixes)
-make govulncheck  # scan dependencies for known vulnerabilities
+make test    # go test ./...
+make lint    # golangci-lint + gofmt formatting check (make fmt fixes)
+make coverage-check  # enforce the 90% coverage threshold
+make govulncheck     # scan dependencies for known vulnerabilities
 make all     # lint, test, build in one pass
 ```
 
@@ -304,16 +367,51 @@ self-consistent but genuinely spec-compliant.
 Project layout:
 
 ```
-cmd/jwtoken-tester/     main binary, flag/env configuration
+cmd/jwtoken-tester/     main binary, flag/env configuration, CLI commands
+cmd/coverage/           coverage-threshold helper used by make coverage-check
 internal/keyring/       key generation, rotation, RFC 7638 kids, zeroization
 internal/tokenfactory/  claim templating, TTL parsing, signing
 internal/server/        HTTP handlers, JWKS, discovery document
-third_party/            vendored commitlint parser (patched, see its README)
+pkg/tester/             embeddable Go test helper (httptest server)
+docker/                 distroless image, compose stack, demo protected service
+docs/                   OpenAPI specification
+openspec/               behavior specs and archived change history
+scripts/                shared version derivation
 ```
 
 ## Roadmap
+
+Shipped:
 
 - [x] Keyring + `/token` + JWKS + discovery, RS256, validated against golang-jwt
 - [x] ES256 / EdDSA support alongside RS256
 - [x] Embeddable Go library mode (`httptest` server helper) and CLI one-shot mode
 - [x] Distroless Docker image + docker-compose example wired to a demo protected service
+
+Candidate enhancements below are **not commitments**. See [`FUTURE.md`](FUTURE.md) for effort,
+value, design notes, and open questions.
+
+- [ ] Public, fully usable `pkg/tester` API (public request/algorithm types, JWKS/PEM helpers)
+      and a leak-free `Close()` lifecycle
+- [ ] Verification and debugging: `POST /verify`, RFC 7662 `POST /introspect`, and
+      `jwtoken-tester decode` / `verify` CLI commands
+- [ ] Standards-compliant `POST /oauth/token` (client credentials) plus richer discovery
+      metadata, RFC 8414 metadata, and `/userinfo`
+- [ ] More algorithms (PS256/PS384/PS512, RS384/RS512, ES384/ES512, optional HMAC) and
+      negative-token controls (`alg: none`, malformed tokens, `kid`/`typ`/`x5c` overrides)
+- [ ] Claim profiles for common IdPs (Entra ID, Auth0, Keycloak, Okta, Cognito) and
+      configurable default claims
+- [ ] JWKS caching headers (ETag/304, `Cache-Control`) and `no-store` on token responses
+- [ ] Operability: JSON logs, Prometheus metrics, `/readyz`, configurable HTTP timeouts,
+      trusted-proxy handling, optional CORS, and loopback-protected admin rotation
+- [ ] Developer experience: serve the OpenAPI spec, CI examples (GitHub Actions, GitLab,
+      Kubernetes/Helm, Testcontainers), and `make bench`
+- [ ] Supply chain: SBOMs, image signing/provenance, Scorecard/CodeQL, dependency review,
+      a race-enabled CI job, and a container smoke test
+
+Exploratory — design questions need answering first:
+
+- [ ] Opt-in fixture keys (`keygen` + `--keys-file`, or a deterministic seed) for shared
+      cross-process fixtures
+- [ ] `x5c` certificate chains, JWE, DPoP, and an authorization-code + PKCE flow
+- [ ] Multiple active keys per algorithm and multiple issuers

@@ -15,11 +15,11 @@ Fork the repo, clone it, then build and test:
 
 ```sh
 make all          # lint, test, build in one pass
-make test         # go test ./... (plus vendored parser tests)
-make lint         # go vet + gofmt formatting check
+make test         # go test ./...
+make lint         # golangci-lint + gofmt formatting check
 make coverage     # measure coverage (threshold: 90%)
 make govulncheck  # scan dependencies for known vulnerabilities
-go run ./cmd/jwtoken-tester   # run the server locally
+go run ./cmd/jwtoken-tester serve   # run the server locally
 ```
 
 ## What to know first
@@ -41,8 +41,7 @@ Release automation (Semrel) derives versions and the changelog
 from commit messages, so the format is **enforced, not just requested**: the PR
 CI job `lint-commits` rejects any commit that does not follow the
 [Conventional Commits](https://www.conventionalcommits.org/) spec (run it
-locally with `make lint-commits`, or the CLI directly with
-`go tool commitlint lint`).
+locally with `make lint-commits`).
 
 ```
 feat(server): add X
@@ -97,13 +96,16 @@ carries the trailer.
 ## Project layout
 
 ```
-cmd/jwtoken-tester/     main binary, flag/env configuration
+cmd/jwtoken-tester/     main binary, flag/env configuration, CLI commands
+cmd/coverage/           coverage-threshold helper used by make coverage-check
 internal/keyring/       key generation, rotation, RFC 7638 kids, zeroization
 internal/tokenfactory/  claim templating, TTL parsing, signing
 internal/server/        HTTP handlers, JWKS, discovery document
 pkg/tester/             embeddable Go library mode (httptest helper)
 docker/                 container + docker-compose demo
-third_party/            vendored commitlint parser (patched, see its README)
+docs/                   OpenAPI specification
+openspec/               behavior specs and archived change history
+scripts/                shared version derivation
 ```
 
 `internal/*` is intentionally internal. Shared public API lives under `pkg/`.

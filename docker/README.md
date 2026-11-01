@@ -58,6 +58,8 @@ This starts two services:
 | ROTATION_INTERVAL | 30m | Key rotation interval (0 to disable) |
 | GRACE_PERIOD | 25h | Grace period for retired keys |
 | ALGORITHMS | RS256,ES256,EdDSA | Enabled algorithms |
+| RATE_LIMIT_RPS | 100 | Per-IP requests per second |
+| RATE_LIMIT_BURST | 200 | Per-IP burst allowance |
 
 ### demo-protected-service
 | Variable | Default | Description |
