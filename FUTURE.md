@@ -30,7 +30,7 @@ exposure, native TLS) are explicitly opt-in and must be labeled loudly.
 
 | # | Candidate | Effort | Value | Why it matters |
 |---|-----------|--------|-------|----------------|
-| 1 | Public `pkg/tester` API + leak-free lifecycle | S–M | High | The headline library mode is hard to use from another module today. |
+| 1 | Public `pkg/tester` API + leak-free lifecycle | — | Shipped | Delivered in v2.4.0 with a neutral surface and resource-only `Close`. |
 | 2 | Verification, introspection, and `decode`/`verify` CLI | M | High | Turns the tool from a token source into a debugging aid. |
 | 3 | Standards-compliant OAuth token endpoint + richer discovery | M | High | Generic OAuth/OIDC clients cannot use the advertised endpoint today. |
 | 4 | More algorithms + negative-token controls | M | High | Broadens consumer compatibility and negative-path coverage. |
@@ -47,9 +47,24 @@ exposure, native TLS) are explicitly opt-in and must be labeled loudly.
 
 ## 1. Public, leak-free `pkg/tester` API
 
-- **Status:** Candidate
+- **Status:** ✅ Shipped in v2.4.0
 - **Effort:** Small–Medium
 - **Value:** High
+
+**Delivered.** `pkg/tester` now exposes only standard-library and `pkg/tester` types:
+`Algorithm` constants, `MintRequest`, `Token`, `KeyInfo`, public error sentinels,
+`Start`/`NewServer`, `Mint`, `Keys`, `ActiveKeyID`, `PublicKey`, `PublicKeyPEM`,
+`JWKSJSON`, `Rotate`, `PruneAt`, `Handler`, `URL`, `Issuer`, `Client`, `Close`, and
+`WithLogger`. `TokenFactory()` and `KeyRing()` are gone, so no private key material
+or internal package is reachable.
+
+`NewServer` returns only `*Server`; `URL()` replaces the old second return value.
+Startup binds the listener before deriving the issuer, so nothing is mutated after
+serving begins. `Close` stops the listener, cancels rotation, stops internal cleanup,
+waits for those goroutines, and is idempotent. Keys are sorted by `kid`, and retired
+keys stay listed until `PruneAt` removes them.
+
+The original problem statement is retained below for historical context.
 
 **Problem.** The embeddable mode is advertised as complete, but its public surface
 leaks internal packages. `Server.TokenFactory()` returns

@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/larryf1/jwtoken-tester/internal/keyring"
-	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
+	"github.com/larryf1/jwtoken-tester/v2/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/v2/internal/tokenfactory"
 	"golang.org/x/time/rate"
 )
 
@@ -35,9 +35,27 @@ type Server struct {
 	visitors       map[string]*rate.Limiter
 	lastSeen       map[string]time.Time
 	mu             sync.Mutex
+
+	logger        *slog.Logger
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
+	closeOnce     sync.Once
 }
 
-func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string, version string, rateLimitRPS float64, rateLimitBurst int) *Server {
+// Option configures optional server behavior.
+type Option func(*Server)
+
+// WithLogger routes token audit events to logger. A nil logger is ignored so
+// the default logger remains in effect.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Server) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
+
+func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string, version string, rateLimitRPS float64, rateLimitBurst int, opts ...Option) *Server {
 	if rateLimitRPS <= 0 {
 		rateLimitRPS = defaultRateLimitRPS
 	}
@@ -54,8 +72,29 @@ func New(ring keyring.Ring, factory *tokenfactory.Factory, issuer string, versio
 		visitors:       make(map[string]*rate.Limiter),
 		lastSeen:       make(map[string]time.Time),
 	}
-	go s.cleanupVisitors()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.cleanupCancel = cancel
+	s.cleanupDone = make(chan struct{})
+	go s.cleanupVisitors(ctx)
 	return s
+}
+
+// Close stops the visitor-cleanup goroutine and waits for it to exit. It is
+// idempotent and safe to call concurrently.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		if s.cleanupCancel != nil {
+			s.cleanupCancel()
+		}
+		if s.cleanupDone != nil {
+			<-s.cleanupDone
+		}
+	})
 }
 
 func (s *Server) getVisitorLimiter(ip string) *rate.Limiter {
@@ -71,18 +110,24 @@ func (s *Server) getVisitorLimiter(ip string) *rate.Limiter {
 	return limiter
 }
 
-func (s *Server) cleanupVisitors() {
+func (s *Server) cleanupVisitors(ctx context.Context) {
+	defer close(s.cleanupDone)
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.mu.Lock()
-		for ip, lastSeen := range s.lastSeen {
-			if time.Since(lastSeen) > 10*time.Minute {
-				delete(s.visitors, ip)
-				delete(s.lastSeen, ip)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			for ip, lastSeen := range s.lastSeen {
+				if time.Since(lastSeen) > 10*time.Minute {
+					delete(s.visitors, ip)
+					delete(s.lastSeen, ip)
+				}
 			}
+			s.mu.Unlock()
 		}
-		s.mu.Unlock()
 	}
 }
 
@@ -412,7 +457,11 @@ func (s *Server) logTokenEvent(r *http.Request, event string, attrs map[string]a
 	for k, v := range attrs {
 		args = append(args, k, v)
 	}
-	slog.Default().Info("token_audit", args...)
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Info("token_audit", args...)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

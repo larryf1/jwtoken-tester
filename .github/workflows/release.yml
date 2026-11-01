@@ -45,6 +45,21 @@ jobs:
       - name: Restore pinned Semrel plugins
         run: go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 plugin restore
 
+      # The module path's /vN suffix and the release tag's major must agree.
+      # This dry run only computes the candidate version; the guard runs before
+      # any pre-tag plugin can update files or create a commit or tag.
+      - name: Guard release major against module path
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          SEMREL_ANALYTICS_FILE: /dev/null
+        run: |
+          set -euo pipefail
+          summary="${RUNNER_TEMP}/semrel-dry-run.json"
+          go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 \
+            release --dry-run --no-color --output-file "$summary"
+          go run ./cmd/releaseguard --summary "$summary" --go-mod go.mod
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"

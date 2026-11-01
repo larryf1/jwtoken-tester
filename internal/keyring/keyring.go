@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ const (
 var (
 	ErrNoActiveKey    = errors.New("keyring: no active signing key")
 	ErrUnsupportedAlg = errors.New("keyring: unsupported algorithm")
+	ErrKeyNotFound    = errors.New("keyring: key not found")
 )
 
 type Algorithm string
@@ -51,6 +53,7 @@ func JWAAlgorithms() map[Algorithm]jwa.KeyAlgorithm {
 
 type Key struct {
 	Private   crypto.PrivateKey
+	Public    crypto.PublicKey
 	PrivJWK   jwk.Key
 	PubJWK    jwk.Key
 	Algorithm Algorithm
@@ -83,7 +86,7 @@ type Ring interface {
 	RotateAt(now time.Time) error
 	Prune()
 	PruneAt(now time.Time)
-	StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger)
+	StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{}
 	EnabledAlgorithms() []Algorithm
 }
 
@@ -140,6 +143,11 @@ func (r *KeyRing) generateKey(alg Algorithm) (*Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate %s key: %w", alg, err)
 	}
+	signer, ok := priv.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("generate %s key: %T does not implement crypto.Signer", alg, priv)
+	}
+	pub := signer.Public()
 
 	privJWK, err := jwk.Import[jwk.Key](priv)
 	if err != nil {
@@ -165,7 +173,7 @@ func (r *KeyRing) generateKey(alg Algorithm) (*Key, error) {
 			return nil, err
 		}
 	}
-	return &Key{Private: priv, PrivJWK: privJWK, PubJWK: pubJWK, Algorithm: alg, CreatedAt: time.Now()}, nil
+	return &Key{Private: priv, Public: pub, PrivJWK: privJWK, PubJWK: pubJWK, Algorithm: alg, CreatedAt: time.Now()}, nil
 }
 
 func (r *KeyRing) Signer(alg Algorithm) (*Key, error) {
@@ -236,12 +244,15 @@ func (r *KeyRing) PruneAt(now time.Time) {
 	}
 }
 
-func (r *KeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) {
+func (r *KeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
 	if interval <= 0 {
 		logger.Info("key rotation disabled")
-		return
+		close(done)
+		return done
 	}
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -264,6 +275,7 @@ func (r *KeyRing) StartRotation(ctx context.Context, interval time.Duration, log
 			}
 		}
 	}()
+	return done
 }
 
 func (r *KeyRing) JWKByKID(kid string) (jwk.Key, error) {
@@ -275,28 +287,59 @@ func (r *KeyRing) JWKByKID(kid string) (jwk.Key, error) {
 	}
 	key, ok := set.LookupKeyID(kid)
 	if !ok {
-		return nil, fmt.Errorf("keyring: key with kid %q not found", kid)
+		return nil, fmt.Errorf("%w: kid %q", ErrKeyNotFound, kid)
 	}
 	return key, nil
 }
 
-func (r *KeyRing) jwksUnlocked() (jwk.Set, error) {
-	set := jwk.NewSet()
-	for _, k := range r.active {
-		if k != nil {
-			if err := set.AddKey(k.PubJWK); err != nil {
-				return nil, err
-			}
+// Snapshot returns a copy of the active and retired keys ordered by kid.
+func (r *KeyRing) Snapshot() []*Key {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keys := r.sortedKeysUnlocked()
+	out := make([]*Key, len(keys))
+	copy(out, keys)
+	return out
+}
+
+// PublicKeyByKID returns the cached public key for an active or retired kid.
+func (r *KeyRing) PublicKeyByKID(kid string) (crypto.PublicKey, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, k := range r.sortedKeysUnlocked() {
+		if k.Kid() == kid {
+			return k.Public, nil
 		}
 	}
-	for _, keys := range r.retired {
-		for _, k := range keys {
-			if err := set.AddKey(k.PubJWK); err != nil {
-				return nil, err
-			}
+	return nil, fmt.Errorf("%w: kid %q", ErrKeyNotFound, kid)
+}
+
+func (r *KeyRing) jwksUnlocked() (jwk.Set, error) {
+	set := jwk.NewSet()
+	for _, k := range r.sortedKeysUnlocked() {
+		if err := set.AddKey(k.PubJWK); err != nil {
+			return nil, err
 		}
 	}
 	return set, nil
+}
+
+// sortedKeysUnlocked returns active and retired keys ordered by kid. Callers
+// must hold r.mu.
+func (r *KeyRing) sortedKeysUnlocked() []*Key {
+	keys := make([]*Key, 0, len(r.active))
+	for _, k := range r.active {
+		if k != nil {
+			keys = append(keys, k)
+		}
+	}
+	for _, retired := range r.retired {
+		keys = append(keys, retired...)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].Kid() < keys[j].Kid()
+	})
+	return keys
 }
 
 func (r *KeyRing) JWKS() (jwk.Set, error) {

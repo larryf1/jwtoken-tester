@@ -15,12 +15,13 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	jwt5 "github.com/golang-jwt/jwt/v5"
-	"github.com/larryf1/jwtoken-tester/internal/keyring"
-	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
+	"github.com/larryf1/jwtoken-tester/v2/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/v2/internal/tokenfactory"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 )
@@ -844,7 +845,9 @@ func (n *noActiveKeyRing) Prune() {}
 
 func (n *noActiveKeyRing) PruneAt(time.Time) {}
 
-func (n *noActiveKeyRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (n *noActiveKeyRing) StartRotation(context.Context, time.Duration, *slog.Logger) <-chan struct{} {
+	return closedRotation()
+}
 
 func (n *noActiveKeyRing) Rotate() error { return nil }
 
@@ -876,7 +879,9 @@ func (f *failingJWKSRing) Prune() {}
 
 func (f *failingJWKSRing) PruneAt(time.Time) {}
 
-func (f *failingJWKSRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (f *failingJWKSRing) StartRotation(context.Context, time.Duration, *slog.Logger) <-chan struct{} {
+	return closedRotation()
+}
 
 func (f *failingJWKSRing) EnabledAlgorithms() []keyring.Algorithm {
 	return []keyring.Algorithm{keyring.AlgRS256}
@@ -932,11 +937,13 @@ func (r *internalErrRing) JWKS() (jwk.Set, error) { return jwk.NewSet(), nil }
 func (r *internalErrRing) JWKByKID(string) (jwk.Key, error) {
 	return nil, errors.New("unexpected error")
 }
-func (r *internalErrRing) Rotate() error                                              { return nil }
-func (r *internalErrRing) RotateAt(time.Time) error                                   { return nil }
-func (r *internalErrRing) Prune()                                                     {}
-func (r *internalErrRing) PruneAt(time.Time)                                          {}
-func (r *internalErrRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (r *internalErrRing) Rotate() error            { return nil }
+func (r *internalErrRing) RotateAt(time.Time) error { return nil }
+func (r *internalErrRing) Prune()                   {}
+func (r *internalErrRing) PruneAt(time.Time)        {}
+func (r *internalErrRing) StartRotation(context.Context, time.Duration, *slog.Logger) <-chan struct{} {
+	return closedRotation()
+}
 func (r *internalErrRing) EnabledAlgorithms() []keyring.Algorithm {
 	return []keyring.Algorithm{keyring.AlgRS256}
 }
@@ -980,11 +987,19 @@ func (f *failingMarshalRing) JWKS() (jwk.Set, error) {
 func (f *failingMarshalRing) JWKByKID(string) (jwk.Key, error) {
 	return nil, errors.New("marshal error")
 }
-func (f *failingMarshalRing) Rotate() error                                              { return nil }
-func (f *failingMarshalRing) RotateAt(time.Time) error                                   { return nil }
-func (f *failingMarshalRing) Prune()                                                     {}
-func (f *failingMarshalRing) PruneAt(time.Time)                                          {}
-func (f *failingMarshalRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (f *failingMarshalRing) Rotate() error            { return nil }
+func (f *failingMarshalRing) RotateAt(time.Time) error { return nil }
+func (f *failingMarshalRing) Prune()                   {}
+func (f *failingMarshalRing) PruneAt(time.Time)        {}
+func (f *failingMarshalRing) StartRotation(context.Context, time.Duration, *slog.Logger) <-chan struct{} {
+	return closedRotation()
+}
+
+func closedRotation() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}
 func (f *failingMarshalRing) EnabledAlgorithms() []keyring.Algorithm {
 	return []keyring.Algorithm{keyring.AlgRS256}
 }
@@ -1299,5 +1314,77 @@ func TestNewAppliesDefaultRateLimit(t *testing.T) {
 	}
 	if s.rateLimitBurst != defaultRateLimitBurst {
 		t.Errorf("rateLimitBurst = %v, want default %v", s.rateLimitBurst, defaultRateLimitBurst)
+	}
+}
+
+func TestWithLoggerRoutesAuditEvents(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200, WithLogger(logger))
+	t.Cleanup(srv.Close)
+
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"claims":{"sub":"user-1"},"alg":"RS256"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var logEntry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &logEntry); err != nil {
+		t.Fatalf("invalid log JSON: %v", err)
+	}
+	if logEntry["event"] != "token_minted" {
+		t.Errorf("event = %v, want token_minted", logEntry["event"])
+	}
+}
+
+func TestCloseStopsCleanupGoroutine(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+
+	srv.Close()
+
+	select {
+	case <-srv.cleanupDone:
+	default:
+		t.Fatal("cleanup goroutine still running after Close")
+	}
+}
+
+func TestCloseIsIdempotentAndConcurrentSafe(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			srv.Close()
+		}()
+	}
+	wg.Wait()
+
+	srv.Close()
+	select {
+	case <-srv.cleanupDone:
+	default:
+		t.Fatal("cleanup goroutine still running after Close")
 	}
 }

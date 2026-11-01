@@ -1,4 +1,4 @@
-module github.com/larryf1/jwtoken-tester
+module github.com/larryf1/jwtoken-tester/v2
 
 go 1.27.3
 

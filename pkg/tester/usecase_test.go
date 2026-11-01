@@ -12,20 +12,19 @@ package tester
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	jwt5 "github.com/golang-jwt/jwt/v5"
-
-	"github.com/larryf1/jwtoken-tester/internal/keyring"
-	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
 )
 
 func TestUseCaseSimulation(t *testing.T) {
 	t.Run("01 bootstrap and discovery", func(t *testing.T) {
-		s, url := NewServer(t)
+		s := NewServer(t)
+		url := s.URL()
 
 		t.Log("Booted an ephemeral issuer: keys live in memory and vanish on shutdown.")
 		t.Logf("    playground URL: %s", url)
@@ -43,24 +42,16 @@ func TestUseCaseSimulation(t *testing.T) {
 		_, body = httpGet(t, url+"/.well-known/jwks.json")
 		showJSON(t, "GET /.well-known/jwks.json", body)
 
-		set := fetchJWKS(t, url+"/.well-known/jwks.json")
-		for i := 0; i < set.Len(); i++ {
-			k, present := set.Key(i)
-			if !present {
-				t.Fatalf("set.Key(%d) missing", i)
-			}
-			kid, _ := k.KeyID()
-			alg, _ := k.Algorithm()
-			kty := k.KeyType()
-			t.Logf("    published key #%d: kid=%s alg=%v kty=%v", i, kid, alg, kty)
+		for i, key := range s.Keys() {
+			t.Logf("    published key #%d: kid=%s alg=%v retired=%v", i, key.KID, key.Algorithm, key.Retired)
 		}
 		t.Log("That discovery doc + JWKS is everything real JWT middleware needs to configure itself.")
 	})
 
 	t.Run("02 mint a token and verify it", func(t *testing.T) {
-		s, _ := NewServer(t, WithAlgorithms(keyring.AlgRS256))
+		s := NewServer(t, WithAlgorithms(RS256))
 
-		resp, err := s.TokenFactory().Mint(&tokenfactory.Request{
+		resp, err := s.Mint(MintRequest{
 			Claims: map[string]any{
 				"sub":   "user-123",
 				"aud":   []string{"my-service"},
@@ -71,12 +62,12 @@ func TestUseCaseSimulation(t *testing.T) {
 			t.Fatalf("Mint: %v", err)
 		}
 
-		t.Log("Minted a token straight through TokenFactory().Mint(...).")
-		t.Logf("    response envelope: token_type=%s expires_in=%ds", resp.TokenType, resp.ExpiresIn)
+		t.Log("Minted a token straight through Server.Mint(...).")
+		t.Logf("    response envelope: token_type=%s expires_in=%s", resp.TokenType, resp.ExpiresIn)
 		showToken(t, resp.AccessToken)
 
 		t.Log("Now a 'protected service' downloads the JWKS and verifies the signature + issuer + expiry.")
-		tok, err := demoVerify(t, s, resp.AccessToken, string(keyring.AlgRS256))
+		tok, err := demoVerify(t, s, resp.AccessToken, string(RS256))
 		if err != nil {
 			t.Fatalf("protected service rejected a valid token: %v", err)
 		}
@@ -86,7 +77,8 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("03 mint via the HTTP /token endpoint", func(t *testing.T) {
-		s, url := NewServer(t)
+		s := NewServer(t)
+		url := s.URL()
 
 		body := `{"claims":{"sub":"user-999","aud":["api-gateway"],"tenant":"acme"},"alg":"EdDSA"}`
 		t.Logf("POSTing the same request a curl user would: %s", body)
@@ -122,9 +114,9 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("04 already-expired token is rejected", func(t *testing.T) {
-		s, _ := NewServer(t, WithAlgorithms(keyring.AlgRS256))
+		s := NewServer(t, WithAlgorithms(RS256))
 
-		resp, err := s.TokenFactory().Mint(&tokenfactory.Request{
+		resp, err := s.Mint(MintRequest{
 			Claims: map[string]any{"sub": "ghost", "exp": "-5m"},
 		})
 		if err != nil {
@@ -135,7 +127,7 @@ func TestUseCaseSimulation(t *testing.T) {
 		showToken(t, resp.AccessToken)
 
 		t.Log("The protected service checks exp and turns it away:")
-		if _, err := demoVerify(t, s, resp.AccessToken, string(keyring.AlgRS256)); err == nil {
+		if _, err := demoVerify(t, s, resp.AccessToken, string(RS256)); err == nil {
 			t.Fatal("expected the expired token to be rejected")
 		} else {
 			t.Logf("    rejected: %v", err)
@@ -143,9 +135,9 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("05 token for the wrong issuer is rejected", func(t *testing.T) {
-		s, _ := NewServer(t, WithAlgorithms(keyring.AlgRS256))
+		s := NewServer(t, WithAlgorithms(RS256))
 
-		resp, err := s.TokenFactory().Mint(&tokenfactory.Request{
+		resp, err := s.Mint(MintRequest{
 			Claims: map[string]any{"iss": "https://attacker.example", "sub": "admin"},
 		})
 		if err != nil {
@@ -155,7 +147,7 @@ func TestUseCaseSimulation(t *testing.T) {
 		showToken(t, resp.AccessToken)
 
 		t.Log("The demo service pins its issuer expectation and rejects the mismatch:")
-		if _, err := demoVerify(t, s, resp.AccessToken, string(keyring.AlgRS256)); err == nil {
+		if _, err := demoVerify(t, s, resp.AccessToken, string(RS256)); err == nil {
 			t.Fatal("expected the wrong-issuer token to be rejected")
 		} else {
 			t.Logf("    rejected: %v", err)
@@ -163,9 +155,9 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("06 tampered token is rejected", func(t *testing.T) {
-		s, _ := NewServer(t, WithAlgorithms(keyring.AlgRS256))
+		s := NewServer(t, WithAlgorithms(RS256))
 
-		valid, err := s.TokenFactory().Mint(&tokenfactory.Request{})
+		valid, err := s.Mint(MintRequest{})
 		if err != nil {
 			t.Fatalf("Mint: %v", err)
 		}
@@ -185,7 +177,7 @@ func TestUseCaseSimulation(t *testing.T) {
 		t.Logf("    %.80s…", mutated)
 
 		t.Log("Signature verification now fails:")
-		if _, err := demoVerify(t, s, mutated, string(keyring.AlgRS256)); err == nil {
+		if _, err := demoVerify(t, s, mutated, string(RS256)); err == nil {
 			t.Fatal("expected the tampered token to be rejected")
 		} else {
 			t.Logf("    rejected: %v", err)
@@ -193,14 +185,14 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("07 fetch a single key by kid", func(t *testing.T) {
-		_, url := NewServer(t, WithAlgorithms(keyring.AlgES256))
+		s := NewServer(t, WithAlgorithms(ES256))
+		url := s.URL()
 
-		set := fetchJWKS(t, url+"/.well-known/jwks.json")
-		k, present := set.Key(0)
-		if !present {
-			t.Fatalf("set.Key(0) missing")
+		keys := s.Keys()
+		if len(keys) != 1 {
+			t.Fatalf("Keys() length = %d, want 1", len(keys))
 		}
-		kid, _ := k.KeyID()
+		kid := keys[0].KID
 
 		t.Log("A consumer that knows exactly which key signed a token can fetch it alone:")
 		code, body := httpGet(t, url+"/.well-known/jwks.json/"+kid)
@@ -218,7 +210,8 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("08 single-algorithm issuer", func(t *testing.T) {
-		s, url := NewServer(t, WithAlgorithms(keyring.AlgES256))
+		s := NewServer(t, WithAlgorithms(ES256))
+		url := s.URL()
 
 		t.Log("Started the issuer with only ES256 enabled (WithAlgorithms).")
 		_, body := httpGet(t, url+"/.well-known/openid-configuration")
@@ -228,15 +221,17 @@ func TestUseCaseSimulation(t *testing.T) {
 		}
 		t.Logf("    id_token_signing_alg_values_supported = %v", disc["id_token_signing_alg_values_supported"])
 
-		if _, err := s.TokenFactory().Mint(&tokenfactory.Request{Alg: string(keyring.AlgES256)}); err != nil {
+		if _, err := s.Mint(MintRequest{Algorithm: ES256}); err != nil {
 			t.Fatalf("ES256 mint: %v", err)
 		}
 		t.Log("ES256 minted fine.")
 
-		if _, err := s.TokenFactory().Mint(&tokenfactory.Request{Alg: string(keyring.AlgEdDSA)}); err == nil {
+		if _, err := s.Mint(MintRequest{Algorithm: EdDSA}); err == nil {
 			t.Fatal("expected EdDSA to be refused")
+		} else if !errors.Is(err, ErrUnsupportedAlgorithm) {
+			t.Fatalf("EdDSA error = %v, want ErrUnsupportedAlgorithm", err)
 		} else {
-			t.Logf("    factory request for EdDSA -> %v", err)
+			t.Logf("    Server.Mint request for EdDSA -> %v", err)
 		}
 
 		req, _ := http.NewRequest(http.MethodPost, url+"/token", strings.NewReader(`{"alg":"EdDSA"}`))
@@ -254,11 +249,10 @@ func TestUseCaseSimulation(t *testing.T) {
 	})
 
 	t.Run("09 key rotation and the grace window", func(t *testing.T) {
-		s, _ := NewServer(t, WithAlgorithms(keyring.AlgRS256), WithGracePeriod(200*time.Millisecond))
-		ring := s.KeyRing()
+		s := NewServer(t, WithAlgorithms(RS256), WithGracePeriod(200*time.Millisecond))
 
 		t.Log("Key lifecycle demo: rotate -> old key stays published for GRACE_PERIOD -> then pruned.")
-		first, err := s.TokenFactory().Mint(&tokenfactory.Request{Claims: map[string]any{"sub": "user-1"}})
+		first, err := s.Mint(MintRequest{Claims: map[string]any{"sub": "user-1"}})
 		if err != nil {
 			t.Fatalf("Mint: %v", err)
 		}
@@ -266,47 +260,57 @@ func TestUseCaseSimulation(t *testing.T) {
 		t.Logf("    token#1 signed with kid=%s", kidA)
 
 		t.Log("Rotating now (the StartRotation ticker calls exactly this on ROTATION_INTERVAL)...")
-		if err := ring.Rotate(); err != nil {
+		if err := s.Rotate(); err != nil {
 			t.Fatalf("Rotate: %v", err)
 		}
-		set := fetchJWKS(t, s.URL()+"/.well-known/jwks.json")
-		if _, ok := set.LookupKeyID(kidA); !ok {
+		if !keysContain(s.Keys(), kidA) {
+			t.Fatalf("old kid %s missing from Keys during grace", kidA)
+		}
+		_, body := httpGet(t, s.URL()+"/.well-known/jwks.json")
+		var jwks jwksDocument
+		if err := json.Unmarshal(body, &jwks); err != nil {
+			t.Fatalf("decode JWKS: %v", err)
+		}
+		if !jwks.contains(kidA) {
 			t.Fatalf("old kid %s missing from JWKS during grace", kidA)
 		}
-		t.Logf("    JWKS now holds %d keys; the retired kid=%s is still published.", set.Len(), kidA)
+		t.Logf("    JWKS now holds %d keys; the retired kid=%s is still published.", len(jwks.Keys), kidA)
 
-		if _, err := demoVerify(t, s, first.AccessToken, string(keyring.AlgRS256)); err != nil {
+		if _, err := demoVerify(t, s, first.AccessToken, string(RS256)); err != nil {
 			t.Fatalf("token signed by the retired key failed during grace: %v", err)
 		}
 		t.Log("    outstanding tokens signed by the retired key STILL validate during the grace window.")
 
 		t.Log("Simulating the end of GRACE_PERIOD (PruneAt drops + zeroizes over-age keys):")
-		ring.PruneAt(time.Now().Add(500 * time.Millisecond))
-		set = fetchJWKS(t, s.URL()+"/.well-known/jwks.json")
-		if _, ok := set.LookupKeyID(kidA); ok {
+		s.PruneAt(time.Now().Add(500 * time.Millisecond))
+		if keysContain(s.Keys(), kidA) {
 			t.Fatal("old kid still present after grace expired")
 		}
-		t.Logf("    JWKS back to %d key(s); the retired key is gone.", set.Len())
+		if _, err := s.PublicKey(kidA); !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("PublicKey(old) error = %v, want ErrKeyNotFound", err)
+		}
+		t.Logf("    Keys() back to %d key(s); the retired key is gone.", len(s.Keys()))
 
-		if _, err := demoVerify(t, s, first.AccessToken, string(keyring.AlgRS256)); err == nil {
+		if _, err := demoVerify(t, s, first.AccessToken, string(RS256)); err == nil {
 			t.Fatal("expected the pre-rotation token to be rejected after grace")
 		} else {
 			t.Logf("    token#1 now rejected: %v", err)
 		}
 
-		second, err := s.TokenFactory().Mint(&tokenfactory.Request{Claims: map[string]any{"sub": "user-2"}})
+		second, err := s.Mint(MintRequest{Claims: map[string]any{"sub": "user-2"}})
 		if err != nil {
 			t.Fatalf("Mint: %v", err)
 		}
 		t.Logf("    token#2 signed with kid=%s", kidOf(t, second.AccessToken))
-		if _, err := demoVerify(t, s, second.AccessToken, string(keyring.AlgRS256)); err != nil {
+		if _, err := demoVerify(t, s, second.AccessToken, string(RS256)); err != nil {
 			t.Fatalf("token signed by the new active key rejected: %v", err)
 		}
 		t.Log("    tokens from the brand-new active key validate as expected.")
 	})
 
 	t.Run("10 per-IP rate limiting", func(t *testing.T) {
-		s, url := NewServer(t, WithRateLimit(1, 2))
+		s := NewServer(t, WithRateLimit(1, 2))
+		url := s.URL()
 		client := s.Client()
 
 		t.Log("WithRateLimit(rps=1, burst=2): each client gets a token bucket seeded with 2 tokens.")
@@ -335,7 +339,6 @@ func TestUseCaseSimulation(t *testing.T) {
 // expiry, and returns the parsed token or the verification error.
 func demoVerify(t *testing.T, s *Server, raw, allowedAlg string) (*jwt5.Token, error) {
 	t.Helper()
-	set := fetchJWKS(t, s.URL()+"/.well-known/jwks.json")
 	parser := jwt5.NewParser(
 		jwt5.WithValidMethods([]string{allowedAlg}),
 		jwt5.WithIssuer(s.Issuer()),
@@ -343,12 +346,32 @@ func demoVerify(t *testing.T, s *Server, raw, allowedAlg string) (*jwt5.Token, e
 	)
 	return parser.Parse(raw, func(tk *jwt5.Token) (any, error) {
 		kid, _ := tk.Header["kid"].(string)
-		key, ok := set.LookupKeyID(kid)
-		if !ok {
-			return nil, jwt5.ErrSignatureInvalid
-		}
-		return exportPublicKey(t, key)
+		return s.PublicKey(kid)
 	})
+}
+
+func keysContain(keys []KeyInfo, kid string) bool {
+	for _, key := range keys {
+		if key.KID == kid {
+			return true
+		}
+	}
+	return false
+}
+
+type jwksDocument struct {
+	Keys []struct {
+		KID string `json:"kid"`
+	} `json:"keys"`
+}
+
+func (d jwksDocument) contains(kid string) bool {
+	for _, key := range d.Keys {
+		if key.KID == kid {
+			return true
+		}
+	}
+	return false
 }
 
 func httpGet(t *testing.T, url string) (int, []byte) {
@@ -418,4 +441,21 @@ func showJSON(t *testing.T, label string, body []byte) {
 		return
 	}
 	t.Logf("%s: %s", label, string(pretty))
+}
+
+func readAll(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
+	buf := make([]byte, 0, 4096)
+	tmp := make([]byte, 4096)
+	for {
+		n, err := r.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+		}
+		if err != nil {
+			if err.Error() == "EOF" {
+				return buf, nil
+			}
+			return buf, err
+		}
+	}
 }
