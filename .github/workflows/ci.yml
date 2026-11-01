@@ -125,7 +125,7 @@ jobs:
           go-version-file: 'go.mod'
 
       - name: Validate commits with semrel
-        run: go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
+        run: make lint-commits LINT_BASE=${{ github.event.pull_request.base.sha }} LINT_HEAD=${{ github.event.pull_request.head.sha }}
 
   dco:
     if: github.event_name == 'pull_request'
