@@ -15,7 +15,7 @@ import (
 	"time"
 
 	jwt5 "github.com/golang-jwt/jwt/v5"
-	"github.com/larryf1/jwtoken-tester/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/v2/internal/keyring"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
@@ -403,15 +403,19 @@ type failingSignerRing struct {
 	err error
 }
 
-func (f *failingSignerRing) Signer(keyring.Algorithm) (*keyring.Key, error)             { return nil, f.err }
-func (f *failingSignerRing) ActiveKid(keyring.Algorithm) (string, error)                { return "", f.err }
-func (f *failingSignerRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
-func (f *failingSignerRing) JWKByKID(string) (jwk.Key, error)                           { return nil, f.err }
-func (f *failingSignerRing) Rotate() error                                              { return nil }
-func (f *failingSignerRing) RotateAt(time.Time) error                                   { return nil }
-func (f *failingSignerRing) Prune()                                                     {}
-func (f *failingSignerRing) PruneAt(time.Time)                                          {}
-func (f *failingSignerRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (f *failingSignerRing) Signer(keyring.Algorithm) (*keyring.Key, error) { return nil, f.err }
+func (f *failingSignerRing) ActiveKid(keyring.Algorithm) (string, error)    { return "", f.err }
+func (f *failingSignerRing) JWKS() (jwk.Set, error)                         { return jwk.NewSet(), nil }
+func (f *failingSignerRing) JWKByKID(string) (jwk.Key, error)               { return nil, f.err }
+func (f *failingSignerRing) Rotate() error                                  { return nil }
+func (f *failingSignerRing) RotateAt(time.Time) error                       { return nil }
+func (f *failingSignerRing) Prune()                                         {}
+func (f *failingSignerRing) PruneAt(time.Time)                              {}
+func (f *failingSignerRing) StartRotation(context.Context, time.Duration, *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}
 func (f *failingSignerRing) EnabledAlgorithms() []keyring.Algorithm {
 	return []keyring.Algorithm{keyring.AlgRS256}
 }
@@ -583,15 +587,19 @@ type failingSignRing struct {
 	err error
 }
 
-func (f *failingSignRing) Signer(keyring.Algorithm) (*keyring.Key, error)             { return nil, f.err }
-func (f *failingSignRing) ActiveKid(keyring.Algorithm) (string, error)                { return "", f.err }
-func (f *failingSignRing) JWKS() (jwk.Set, error)                                     { return jwk.NewSet(), nil }
-func (f *failingSignRing) JWKByKID(string) (jwk.Key, error)                           { return nil, f.err }
-func (f *failingSignRing) Rotate() error                                              { return nil }
-func (f *failingSignRing) RotateAt(time.Time) error                                   { return nil }
-func (f *failingSignRing) Prune()                                                     {}
-func (f *failingSignRing) PruneAt(time.Time)                                          {}
-func (f *failingSignRing) StartRotation(context.Context, time.Duration, *slog.Logger) {}
+func (f *failingSignRing) Signer(keyring.Algorithm) (*keyring.Key, error) { return nil, f.err }
+func (f *failingSignRing) ActiveKid(keyring.Algorithm) (string, error)    { return "", f.err }
+func (f *failingSignRing) JWKS() (jwk.Set, error)                         { return jwk.NewSet(), nil }
+func (f *failingSignRing) JWKByKID(string) (jwk.Key, error)               { return nil, f.err }
+func (f *failingSignRing) Rotate() error                                  { return nil }
+func (f *failingSignRing) RotateAt(time.Time) error                       { return nil }
+func (f *failingSignRing) Prune()                                         {}
+func (f *failingSignRing) PruneAt(time.Time)                              {}
+func (f *failingSignRing) StartRotation(context.Context, time.Duration, *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}
 func (f *failingSignRing) EnabledAlgorithms() []keyring.Algorithm {
 	return []keyring.Algorithm{keyring.AlgRS256}
 }

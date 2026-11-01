@@ -17,9 +17,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/larryf1/jwtoken-tester/internal/keyring"
-	"github.com/larryf1/jwtoken-tester/internal/server"
-	"github.com/larryf1/jwtoken-tester/internal/tokenfactory"
+	"github.com/larryf1/jwtoken-tester/v2/internal/keyring"
+	"github.com/larryf1/jwtoken-tester/v2/internal/server"
+	"github.com/larryf1/jwtoken-tester/v2/internal/tokenfactory"
 )
 
 var Version string
@@ -135,7 +135,7 @@ func runServe(logger *slog.Logger, args []string) {
 	ring.StartRotation(ctx, cfg.RotationPeriod, logger)
 
 	factory := tokenfactory.NewFactory(ring, cfg.Issuer, cfg.DefaultTTL, cfg.MaxTTL)
-	srv := server.New(ring, factory, cfg.Issuer, Version, cfg.RateLimitRPS, cfg.RateLimitBurst)
+	srv := server.New(ring, factory, cfg.Issuer, Version, cfg.RateLimitRPS, cfg.RateLimitBurst, server.WithLogger(logger))
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           srv.Handler(),
@@ -167,6 +167,7 @@ func runServe(logger *slog.Logger, args []string) {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 	}
+	srv.Close()
 	logger.Info("stopped; ephemeral signing keys discarded")
 }
 

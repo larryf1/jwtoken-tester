@@ -65,7 +65,7 @@ every [release](https://github.com/larryf1/jwtoken-tester/releases). Or install
 from source (Go 1.27+):
 
 ```sh
-go install github.com/larryf1/jwtoken-tester/cmd/jwtoken-tester@latest
+go install github.com/larryf1/jwtoken-tester/v2/cmd/jwtoken-tester@latest
 ```
 
 A released Docker image is also published:
@@ -79,19 +79,48 @@ docker run --rm -p 8080:8080 ghcr.io/larryf1/jwtoken-tester
 
 Versions are derived automatically from [Conventional Commits](https://www.conventionalcommits.org/)
 and cut with [Semrel](https://semrel.io/):
-`feat` → minor, `fix` → patch, `BREAKING CHANGE:` → major. Every PR merge to `main` is
-gated by CI that enforces the commit format (`commitlint`, run it locally with
-`make lint-commits`) and the DCO `Signed-off-by:` trailer. There is no manual version to pick.
+`feat` → minor, `fix` → patch, `BREAKING CHANGE:` → major on an unsuffixed
+module path. Every PR merge to `main` is gated by CI that enforces the commit
+format (`commitlint`, run it locally with `make lint-commits`) and the DCO
+`Signed-off-by:` trailer. There is no manual version to pick.
 
 The **Release** workflow does everything in one manual run from `main`:
-1. Semrel analyzes the history and determines the next version.
-2. It updates `CHANGELOG.md`, `VERSION`, and `docs/openapi.yaml`, commits them as
+1. A dry run computes the candidate version, then `cmd/releaseguard` compares its
+   major with the major encoded in the module path. A mismatch stops the run
+   before anything is written.
+2. Semrel analyzes the history and determines the next version.
+3. It updates `CHANGELOG.md`, `VERSION`, and `docs/openapi.yaml`, commits them as
    `chore(release): set version to vX.Y.Z [skip ci]`, and tags that commit.
-3. Its release plugins push the commit and `vX.Y.Z` tag to `main` with
+4. Its release plugins push the commit and `vX.Y.Z` tag to `main` with
    `RELEASE_TOKEN` and create the GitHub Release with the changelog.
-4. GoReleaser then builds the binary archives and attaches them to the release,
+5. GoReleaser then builds the binary archives and attaches them to the release,
    and the multi-architecture Docker image is built and pushed to GHCR as
    `X.Y.Z` and `latest` in the same run.
+
+### Module major versions and `/vN` releases
+
+The module path ends in `/v2` (`github.com/larryf1/jwtoken-tester/v2`). Because a
+`/vN` module cannot publish a `v(N+1)` tag, the Release workflow runs
+`cmd/releaseguard` as a preflight. It reads the module path from `go.mod`,
+derives the required major from the final `/vN` segment (or `1` when there is
+no suffix), and rejects a computed version whose major differs. The guard runs
+before any version-file update, release commit, tag, push, GitHub Release, or
+image push, and its error names the module path that must be migrated.
+
+To ship a deliberate breaking change:
+
+1. Change `go.mod` to `/v(N+1)` and rewrite every internal import plus the
+   install/import paths in the README.
+2. Land the migration together with the breaking change so Semrel computes
+   `v(N+1).0.0`; the guard then sees matching majors. Do not tag the new path
+   with an old-major version.
+3. Never rewrite or delete a published tag.
+
+This `/v2` introduction is the one deliberate exception to the major-bump rule:
+it must land as a `feat:` commit with no `!` type marker and no
+`BREAKING CHANGE:` footer, so Semrel computes `v2.4.0` — the first tag the Go
+module proxy can resolve for the `/v2` path. The older `v2.0.0`–`v2.3.0` tags
+remain valid only for the unsuffixed path.
 
 The **Publish (development build)** workflow is for ad-hoc image pushes from any
 branch; it uses the development-build version scheme below.
@@ -316,38 +345,53 @@ proxy only if you trust that header. Non-positive rate-limit values fall back to
 ## Embedding in Go tests
 
 `pkg/tester` starts an in-process issuer over `httptest`, registers cleanup
-automatically, and returns the server handle plus its issuer URL. No binary,
-port reservation, or external process is required.
+automatically, and returns a leak-free server handle. No binary, port
+reservation, or external process is required.
 
 ```go
 package auth_test
 
 import (
-	"net/http"
-	"strings"
 	"testing"
 
-	"github.com/larryf1/jwtoken-tester/pkg/tester"
+	"github.com/larryf1/jwtoken-tester/v2/pkg/tester"
 )
 
 func TestProtectedEndpoint(t *testing.T) {
-	srv, issuer := tester.NewServer(t, tester.WithAlgorithms("RS256"))
+	srv := tester.NewServer(t, tester.WithAlgorithms(tester.RS256))
 
-	resp, err := srv.Client().Post(issuer+"/token", "application/json",
-		strings.NewReader(`{"claims":{"sub":"user-123","aud":["my-service"]}}`))
+	token, err := srv.Mint(tester.MintRequest{
+		Claims: map[string]any{
+			"sub": "user-123",
+			"aud": []string{"my-service"},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	// Decode access_token from resp.Body, then point the service under test at
-	// `issuer` and send the token as a Bearer credential — exactly as you would
-	// with a real IdP.
+	// Point the service under test at srv.Issuer(), and send token.AccessToken
+	// as a Bearer credential exactly as you would with a real IdP. The service
+	// can fetch srv.URL()+"/.well-known/jwks.json", or the test can use
+	// srv.JWKSJSON(), srv.PublicKey(kid), or srv.PublicKeyPEM(kid).
 }
 ```
 
 Options mirror the server settings: `WithAlgorithms`, `WithIssuer`, `WithDefaultTTL`,
-`WithMaxTTL`, `WithRotationInterval`, `WithGracePeriod`, and `WithRateLimit`.
+`WithMaxTTL`, `WithRotationInterval`, `WithGracePeriod`, `WithRateLimit`, and
+`WithLogger`. An empty issuer selects the bound server URL. Enabled algorithms use
+`tester.RS256`, `tester.ES256`, and `tester.EdDSA`; `Mint` returns `ErrUnsupportedAlgorithm`,
+`ErrTTLTooLong`, or `ErrInvalidRequest` for rejected requests.
+
+`NewServer` is the testing wrapper: it panics if startup fails and registers
+`t.Cleanup(srv.Close)`. For `TestMain`, benchmarks, or non-`testing` callers, use
+`Start(opts...)` and call `Close` yourself. `Close` stops the listener, rotation, and
+internal cleanup, waits for those goroutines, and is safe to call more than once.
+Minting and key accessors keep working after `Close` because they use in-memory state.
+
+The exported surface uses only standard-library and `pkg/tester` types: `Mint`,
+`Keys`, `ActiveKeyID`, `PublicKey`, `PublicKeyPEM`, `JWKSJSON`, `Rotate`, `PruneAt`,
+`Handler`, `URL`, `Issuer`, `Client`, and `Close`. No private key material is reachable.
 
 ## Development
 
@@ -387,14 +431,14 @@ Shipped:
 - [x] ES256 / EdDSA support alongside RS256
 - [x] Embeddable Go library mode (`httptest` server helper) and CLI one-shot mode
 - [x] Distroless Docker image + docker-compose example wired to a demo protected service
+- [x] Public, leak-free `pkg/tester` API (neutral algorithm/request types, JWKS/PEM helpers,
+      deterministic keys, and a resource-only `Close`)
 
 Candidate enhancements below are **not commitments**. See [`FUTURE.md`](FUTURE.md) for effort,
 value, design notes, and open questions.
 
-- [ ] Public, fully usable `pkg/tester` API (public request/algorithm types, JWKS/PEM helpers)
-      and a leak-free `Close()` lifecycle
 - [ ] Verification and debugging: `POST /verify`, RFC 7662 `POST /introspect`, and
-      `jwtoken-tester decode` / `verify` CLI commands
+       `jwtoken-tester decode` / `verify` CLI commands
 - [ ] Standards-compliant `POST /oauth/token` (client credentials) plus richer discovery
       metadata, RFC 8414 metadata, and `/userinfo`
 - [ ] More algorithms (PS256/PS384/PS512, RS384/RS512, ES384/ES512, optional HMAC) and

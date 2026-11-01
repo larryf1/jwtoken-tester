@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,42 @@ func TestKidIsRFC7638Thumbprint(t *testing.T) {
 			want := base64.RawURLEncoding.EncodeToString(thumbprint)
 			if k.Kid() != want {
 				t.Fatalf("kid = %q, want thumbprint %q", k.Kid(), want)
+			}
+		})
+	}
+}
+
+func TestEveryEnabledAlgorithmExposesUsablePublicKey(t *testing.T) {
+	for _, alg := range []Algorithm{AlgRS256, AlgES256, AlgEdDSA} {
+		t.Run(string(alg), func(t *testing.T) {
+			r := newTestRing(t, time.Hour, alg)
+			k, err := r.Signer(alg)
+			if err != nil {
+				t.Fatalf("Signer() error = %v", err)
+			}
+			if k.Public == nil {
+				t.Fatal("Public is nil")
+			}
+			signer, ok := k.Private.(crypto.Signer)
+			if !ok {
+				t.Fatalf("private key %T does not implement crypto.Signer", k.Private)
+			}
+			switch alg {
+			case AlgRS256:
+				if _, ok := k.Public.(*rsa.PublicKey); !ok {
+					t.Fatalf("Public type = %T, want *rsa.PublicKey", k.Public)
+				}
+			case AlgES256:
+				if _, ok := k.Public.(*ecdsa.PublicKey); !ok {
+					t.Fatalf("Public type = %T, want *ecdsa.PublicKey", k.Public)
+				}
+			case AlgEdDSA:
+				if _, ok := k.Public.(ed25519.PublicKey); !ok {
+					t.Fatalf("Public type = %T, want ed25519.PublicKey", k.Public)
+				}
+			}
+			if !reflect.DeepEqual(k.Public, signer.Public()) {
+				t.Fatal("cached public key differs from signer public key")
 			}
 		})
 	}
@@ -292,11 +329,32 @@ func TestStartRotationDisabledWhenIntervalZero(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	r.StartRotation(ctx, 0, logger)
+	done := r.StartRotation(ctx, 0, logger)
+	select {
+	case <-done:
+	default:
+		t.Fatal("StartRotation with zero interval did not return a closed done channel")
+	}
 	time.Sleep(10 * time.Millisecond)
 	output := buf.String()
 	if !strings.Contains(output, "key rotation disabled") {
 		t.Fatalf("expected log about rotation disabled, got: %s", output)
+	}
+}
+
+func TestStartRotationCancellationClosesDone(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	done := r.StartRotation(ctx, 10*time.Millisecond, logger)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("rotation goroutine did not exit after cancellation")
 	}
 }
 
@@ -414,12 +472,15 @@ func (f *failingKeyRing) Rotate() error                       { return f.err }
 func (f *failingKeyRing) RotateAt(time.Time) error            { return f.err }
 func (f *failingKeyRing) Prune()                              {}
 func (f *failingKeyRing) PruneAt(time.Time)                   {}
-func (f *failingKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) {
+func (f *failingKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
 	if interval <= 0 {
 		logger.Info("key rotation disabled")
-		return
+		close(done)
+		return done
 	}
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -441,6 +502,7 @@ func (f *failingKeyRing) StartRotation(ctx context.Context, interval time.Durati
 			}
 		}
 	}()
+	return done
 }
 
 func (f *failingKeyRing) EnabledAlgorithms() []Algorithm { return []Algorithm{AlgRS256} }
@@ -503,12 +565,15 @@ func (f *failingActiveKidKeyRing) Rotate() error            { return nil }
 func (f *failingActiveKidKeyRing) RotateAt(time.Time) error { return nil }
 func (f *failingActiveKidKeyRing) Prune()                   {}
 func (f *failingActiveKidKeyRing) PruneAt(time.Time)        {}
-func (f *failingActiveKidKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) {
+func (f *failingActiveKidKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
 	if interval <= 0 {
 		logger.Info("key rotation disabled")
-		return
+		close(done)
+		return done
 	}
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -530,6 +595,7 @@ func (f *failingActiveKidKeyRing) StartRotation(ctx context.Context, interval ti
 			}
 		}
 	}()
+	return done
 }
 
 func (f *failingActiveKidKeyRing) EnabledAlgorithms() []Algorithm { return []Algorithm{AlgRS256} }
@@ -613,6 +679,40 @@ func TestSignerErrors(t *testing.T) {
 	}
 }
 
+func TestJWKSKeyOrderIsStableAndSortedByKid(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256, AlgES256, AlgEdDSA)
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+
+	first, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	second, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if first.Len() != second.Len() {
+		t.Fatalf("JWKS lengths differ: %d vs %d", first.Len(), second.Len())
+	}
+
+	var previous string
+	for i := 0; i < first.Len(); i++ {
+		firstKey, _ := first.Key(i)
+		secondKey, _ := second.Key(i)
+		firstKid, _ := firstKey.KeyID()
+		secondKid, _ := secondKey.KeyID()
+		if firstKid != secondKid {
+			t.Fatalf("key order changed at index %d: %q vs %q", i, firstKid, secondKid)
+		}
+		if i > 0 && firstKid < previous {
+			t.Fatalf("keys not sorted by kid: %q before %q", previous, firstKid)
+		}
+		previous = firstKid
+	}
+}
+
 func TestJWKSWithRetiredKeys(t *testing.T) {
 	r := newTestRing(t, time.Hour, AlgRS256)
 	oldKey, _ := r.Signer(AlgRS256)
@@ -642,7 +742,12 @@ func TestStartRotationDisabledWhenIntervalNegative(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	r.StartRotation(ctx, -time.Hour, logger)
+	done := r.StartRotation(ctx, -time.Hour, logger)
+	select {
+	case <-done:
+	default:
+		t.Fatal("StartRotation with negative interval did not return a closed done channel")
+	}
 	time.Sleep(10 * time.Millisecond)
 	output := buf.String()
 	if !strings.Contains(output, "key rotation disabled") {
@@ -654,6 +759,66 @@ func TestNewRequiresAtLeastOneAlgorithm(t *testing.T) {
 	_, err := New(time.Hour, []Algorithm{})
 	if err == nil {
 		t.Fatal("expected error when no algorithms enabled")
+	}
+}
+
+func TestSnapshotIncludesActiveAndRetiredKeysSortedByKid(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256, AlgES256)
+	oldRS, err := r.Signer(AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+
+	snapshot := r.Snapshot()
+	if len(snapshot) != 4 {
+		t.Fatalf("Snapshot() length = %d, want 4 (two active, two retired)", len(snapshot))
+	}
+	var previous string
+	foundRetired := false
+	for i, key := range snapshot {
+		if i > 0 && key.Kid() < previous {
+			t.Fatalf("Snapshot() not sorted by kid: %q before %q", previous, key.Kid())
+		}
+		previous = key.Kid()
+		if key.Kid() == oldRS.Kid() {
+			foundRetired = true
+			if key.RetiredAt.IsZero() {
+				t.Fatal("retired key has zero RetiredAt")
+			}
+		}
+	}
+	if !foundRetired {
+		t.Fatal("retired key missing from Snapshot()")
+	}
+}
+
+func TestPublicKeyByKIDActiveRetiredPrunedAndUnknown(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	active, err := r.Signer(AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+	if got, err := r.PublicKeyByKID(active.Kid()); err != nil || got == nil {
+		t.Fatalf("PublicKeyByKID(active) = %v, %v", got, err)
+	}
+
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	if got, err := r.PublicKeyByKID(active.Kid()); err != nil || got == nil {
+		t.Fatalf("PublicKeyByKID(retired) = %v, %v", got, err)
+	}
+
+	r.PruneAt(time.Now().Add(2 * time.Hour))
+	if _, err := r.PublicKeyByKID(active.Kid()); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("PublicKeyByKID(pruned) error = %v, want ErrKeyNotFound", err)
+	}
+	if _, err := r.PublicKeyByKID("unknown-kid"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("PublicKeyByKID(unknown) error = %v, want ErrKeyNotFound", err)
 	}
 }
 

@@ -51,7 +51,8 @@ docs(readme): clarify TTL parsing
 
 Type keywords that cut a release: `feat` → minor, `fix` → patch. `docs`,
 `chore`, `refactor`, `test` do not. Put `BREAKING CHANGE:` in the body when a
-change is breaking (→ major).
+change is breaking (→ major on an unsuffixed module path; a `/vN` path needs a
+module-path migration first, see [Releases](#releases)).
 
 ## Releases
 
@@ -60,7 +61,8 @@ the merged conventional commits:
 
 - `feat` → **minor** (e.g. `1.0.0` → `1.1.0`)
 - `fix` → **patch** (e.g. `1.0.0` → `1.0.1`)
-- `BREAKING CHANGE:` → **major** (e.g. `1.0.0` → `2.0.0`)
+- `BREAKING CHANGE:` → **major** (e.g. `1.0.0` → `2.0.0`); on the current
+  `/vN` module path this fails the major guard until the path is migrated
 
 There is no manual version number step — the version is always derived. To cut
 a release, run the [Release](.github/workflows/release.yml) workflow
@@ -73,6 +75,16 @@ release, and publish the Docker image. If
 `main` is protected, `RELEASE_TOKEN` must be allowed to push. The separate
 [Publish](.github/workflows/publish.yml) workflow is only for ad-hoc development
 images.
+
+The module path carries a `/vN` suffix, so the release tag's major must match
+it. Before any pre-tag or release plugin runs, the Release workflow's
+`cmd/releaseguard` preflight compares Semrel's computed version with the module
+path and fails without writing anything on a mismatch. A deliberate major
+change therefore requires changing `go.mod` and every import to `/v(N+1)` in the
+same release, so the computed version becomes `v(N+1).0.0`; a bare path change
+must not be released as a minor. The `/v2` introduction itself lands as a
+`feat:` commit with no breaking marker so Semrel computes `v2.4.0`. See
+[Module major versions and `/vN` releases](README.md#module-major-versions-and-vn-releases).
 
 ## Developer Certificate of Origin (DCO)
 
