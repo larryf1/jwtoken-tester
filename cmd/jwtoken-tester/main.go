@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -48,33 +49,40 @@ type printTokenConfig struct {
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	switch os.Args[1] {
-	case "serve":
-		runServe(logger, os.Args[2:])
-	case "print-token":
-		runPrintToken(logger, os.Args[2:])
-	case "healthcheck":
-		runHealthcheck(os.Args[2:])
-	case "help", "-h", "--help":
-		printUsage()
-	default:
-		_, err := fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-		if err != nil {
-			return
-		}
-		printUsage()
-		os.Exit(1)
-	}
+	os.Exit(run(os.Args, os.Stdin, os.Stdout, os.Stderr, logger))
 }
 
-func printUsage() {
-	fmt.Println(`jwtoken-tester - ephemeral JWT/JWKS test issuer
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer, logger *slog.Logger) int {
+	if len(args) < 2 {
+		printUsage(stdout)
+		return 1
+	}
+
+	switch args[1] {
+	case "serve":
+		runServe(logger, args[2:])
+	case "print-token":
+		runPrintToken(logger, args[2:])
+	case "decode":
+		return runDecodeCommand(args[2:], stdin, stdout, stderr)
+	case "verify":
+		return runVerifyCommand(args[2:], stdin, stdout, stderr)
+	case "healthcheck":
+		runHealthcheck(args[2:])
+	case "help", "-h", "--help":
+		printUsage(stdout)
+	default:
+		if _, err := fmt.Fprintf(stderr, "unknown command: %s\n", args[1]); err != nil {
+			return 1
+		}
+		printUsage(stdout)
+		return 1
+	}
+	return 0
+}
+
+func printUsage(w io.Writer) {
+	fmt.Fprintln(w, `jwtoken-tester - ephemeral JWT/JWKS test issuer
 
 Usage:
   jwtoken-tester <command> [flags]
@@ -82,6 +90,8 @@ Usage:
 Commands:
   serve         Run the HTTP server (default)
   print-token   Generate a single JWT and print it to stdout
+  decode        Decode a JWT header and claims without verifying
+  verify        Verify a JWT against a JWKS URL, file, or discovered issuer
   healthcheck   Probe the local server's health endpoint
   help          Show this help
 
@@ -89,7 +99,10 @@ Examples:
   jwtoken-tester serve
   jwtoken-tester serve --listen 0.0.0.0:8080 --issuer https://test.example.com
   jwtoken-tester print-token --sub user-123 --aud my-service --alg RS256
-  jwtoken-tester print-token --claims '{"sub":"user-1","roles":["admin"]}'`)
+  jwtoken-tester print-token --claims '{"sub":"user-1","roles":["admin"]}'
+  jwtoken-tester decode "$ACCESS_TOKEN"
+  jwtoken-tester verify --jwks http://127.0.0.1:8080/.well-known/jwks.json "$ACCESS_TOKEN"
+  jwtoken-tester verify --issuer http://127.0.0.1:8080 --aud my-service --json "$ACCESS_TOKEN"`)
 }
 
 func runServe(logger *slog.Logger, args []string) {

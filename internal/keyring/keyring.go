@@ -38,6 +38,15 @@ const (
 	AlgEdDSA Algorithm = "EdDSA"
 )
 
+// KeyStatus reports whether a key found by Lookup is still signing or has been
+// retired and is being kept published for its grace window.
+type KeyStatus string
+
+const (
+	KeyStatusActive  KeyStatus = "active"
+	KeyStatusRetired KeyStatus = "retired"
+)
+
 var (
 	allAlgorithms = []Algorithm{AlgRS256, AlgES256, AlgEdDSA}
 	jwaAlgorithms = map[Algorithm]jwa.KeyAlgorithm{
@@ -80,6 +89,7 @@ type KeyRing struct {
 type Ring interface {
 	Signer(alg Algorithm) (*Key, error)
 	ActiveKid(alg Algorithm) (string, error)
+	Lookup(kid string) (crypto.PublicKey, KeyStatus, error)
 	JWKS() (jwk.Set, error)
 	JWKByKID(kid string) (jwk.Key, error)
 	Rotate() error
@@ -300,6 +310,27 @@ func (r *KeyRing) Snapshot() []*Key {
 	out := make([]*Key, len(keys))
 	copy(out, keys)
 	return out
+}
+
+// Lookup returns the cached public key and status for a kid. It takes the read
+// lock once and searches the same active/retired snapshot that JWKS and
+// Snapshot use, so a concurrent rotation cannot produce a torn answer.
+func (r *KeyRing) Lookup(kid string) (crypto.PublicKey, KeyStatus, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, k := range r.active {
+		if k != nil && k.Kid() == kid {
+			return k.Public, KeyStatusActive, nil
+		}
+	}
+	for _, retired := range r.retired {
+		for _, k := range retired {
+			if k != nil && k.Kid() == kid {
+				return k.Public, KeyStatusRetired, nil
+			}
+		}
+	}
+	return nil, "", fmt.Errorf("%w: kid %q", ErrKeyNotFound, kid)
 }
 
 // PublicKeyByKID returns the cached public key for an active or retired kid.

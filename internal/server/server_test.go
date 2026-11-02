@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rsa"
@@ -715,6 +716,9 @@ func TestIndexListsEndpoints(t *testing.T) {
 	if !strings.Contains(string(data), "/.well-known/jwks.json") {
 		t.Fatalf("index does not list jwks endpoint: %s", data)
 	}
+	if !strings.Contains(string(data), "POST /verify") {
+		t.Fatalf("index does not list verify endpoint: %s", data)
+	}
 }
 
 func TestJWKSEndpointHandlesKeyringError(t *testing.T) {
@@ -837,6 +841,10 @@ func (n *noActiveKeyRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", keyring.ErrNoActiveKey
 }
 
+func (n *noActiveKeyRing) Lookup(string) (crypto.PublicKey, keyring.KeyStatus, error) {
+	return nil, "", keyring.ErrKeyNotFound
+}
+
 func (n *noActiveKeyRing) RotateAt(time.Time) error {
 	return nil
 }
@@ -862,6 +870,9 @@ func (f *failingJWKSRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 }
 func (f *failingJWKSRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", keyring.ErrNoActiveKey
+}
+func (f *failingJWKSRing) Lookup(string) (crypto.PublicKey, keyring.KeyStatus, error) {
+	return nil, "", errors.New("jwks failed")
 }
 func (f *failingJWKSRing) JWKS() (jwk.Set, error) {
 	return nil, errors.New("jwks failed")
@@ -933,6 +944,9 @@ func (r *internalErrRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 func (r *internalErrRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", errors.New("unexpected error")
 }
+func (r *internalErrRing) Lookup(string) (crypto.PublicKey, keyring.KeyStatus, error) {
+	return nil, "", errors.New("unexpected error")
+}
 func (r *internalErrRing) JWKS() (jwk.Set, error) { return jwk.NewSet(), nil }
 func (r *internalErrRing) JWKByKID(string) (jwk.Key, error) {
 	return nil, errors.New("unexpected error")
@@ -975,6 +989,9 @@ func (f *failingMarshalRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 }
 func (f *failingMarshalRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", keyring.ErrNoActiveKey
+}
+func (f *failingMarshalRing) Lookup(string) (crypto.PublicKey, keyring.KeyStatus, error) {
+	return nil, "", keyring.ErrKeyNotFound
 }
 func (f *failingMarshalRing) JWKS() (jwk.Set, error) {
 	set := jwk.NewSet()
@@ -1386,5 +1403,341 @@ func TestCloseIsIdempotentAndConcurrentSafe(t *testing.T) {
 	case <-srv.cleanupDone:
 	default:
 		t.Fatal("cleanup goroutine still running after Close")
+	}
+}
+
+func mintVerifyToken(t *testing.T, ring keyring.Ring, claims map[string]any) string {
+	t.Helper()
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	resp, err := factory.Mint(&tokenfactory.Request{Claims: claims, Alg: string(keyring.AlgRS256)})
+	if err != nil {
+		t.Fatalf("Mint() error = %v", err)
+	}
+	return resp.AccessToken
+}
+
+func signedVerifyToken(t *testing.T, ring keyring.Ring, claims map[string]any, header map[string]any) string {
+	t.Helper()
+	key, err := ring.Signer(keyring.AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+	tok := jwt5.NewWithClaims(jwt5.SigningMethodRS256, jwt5.MapClaims(claims))
+	for name, value := range header {
+		tok.Header[name] = value
+	}
+	signed, err := tok.SignedString(key.Private)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	return signed
+}
+
+func tamperServerToken(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[2] == "" {
+		return token
+	}
+	if parts[2][0] == 'A' {
+		parts[2] = "B" + parts[2][1:]
+	} else {
+		parts[2] = "A" + parts[2][1:]
+	}
+	return strings.Join(parts, ".")
+}
+
+func decodeVerdict(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	var verdict map[string]any
+	if err := json.Unmarshal(data, &verdict); err != nil {
+		t.Fatalf("decode verdict: %v (body %s)", err, data)
+	}
+	return verdict
+}
+
+func TestVerifyEndpointAcceptsValidToken(t *testing.T) {
+	ts, ring := newTestServer(t, keyring.AlgRS256)
+	token := mintVerifyToken(t, ring, map[string]any{
+		"sub":   "user-1",
+		"aud":   "my-service",
+		"roles": []string{"admin"},
+	})
+
+	resp, data := postJSON(t, ts.URL+"/verify", `{"token":"`+token+`","aud":["my-service"]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", resp.StatusCode, data)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	verdict := decodeVerdict(t, data)
+	if verdict["valid"] != true {
+		t.Fatalf("verdict = %#v", verdict)
+	}
+	if verdict["reason"] != nil {
+		t.Fatalf("valid verdict has reason: %#v", verdict)
+	}
+	if verdict["kid_status"] != "active" {
+		t.Fatalf("kid_status = %v, want active", verdict["kid_status"])
+	}
+	if verdict["alg"] != "RS256" {
+		t.Fatalf("alg = %v", verdict["alg"])
+	}
+	header, ok := verdict["header"].(map[string]any)
+	if !ok || header["kid"] == "" {
+		t.Fatalf("header = %#v", verdict["header"])
+	}
+	claims, ok := verdict["claims"].(map[string]any)
+	if !ok || claims["sub"] != "user-1" || claims["roles"] == nil {
+		t.Fatalf("claims = %#v", verdict["claims"])
+	}
+	if verdict["unverified_claims"] != nil {
+		t.Fatalf("valid verdict carries unverified_claims: %#v", verdict["unverified_claims"])
+	}
+}
+
+func TestVerifyEndpointReportsFailureReasons(t *testing.T) {
+	ts, ring := newTestServer(t, keyring.AlgRS256)
+
+	cases := []struct {
+		name      string
+		token     string
+		body      string
+		reason    string
+		kidStatus string
+		label     string
+	}{
+		{
+			name:      "expired",
+			token:     mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "exp": "-5m"}),
+			reason:    "expired",
+			kidStatus: "active",
+			label:     "claims",
+		},
+		{
+			name:      "unknown kid",
+			token:     signedVerifyToken(t, ring, map[string]any{"iss": testIssuer, "sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()}, map[string]any{"kid": "unknown-kid"}),
+			reason:    "kid",
+			kidStatus: "unknown",
+			label:     "unverified_claims",
+		},
+		{
+			name:      "bad signature",
+			token:     tamperServerToken(mintVerifyToken(t, ring, map[string]any{"sub": "user-1"})),
+			reason:    "signature",
+			kidStatus: "active",
+			label:     "unverified_claims",
+		},
+		{
+			name:   "wrong issuer",
+			token:  mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "iss": "https://attacker.example"}),
+			reason: "issuer",
+			label:  "claims",
+		},
+		{
+			name:   "wrong audience",
+			token:  mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "aud": "other-service"}),
+			body:   `,"aud":"my-service"`,
+			reason: "audience",
+			label:  "claims",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, data := postJSON(t, ts.URL+"/verify", `{"token":"`+tc.token+`"`+tc.body+`}`)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %s)", resp.StatusCode, data)
+			}
+			verdict := decodeVerdict(t, data)
+			if verdict["valid"] != false {
+				t.Fatalf("verdict = %#v", verdict)
+			}
+			if verdict["reason"] != tc.reason {
+				t.Fatalf("reason = %v, want %s", verdict["reason"], tc.reason)
+			}
+			if verdict["error"] == "" || verdict["error"] == nil {
+				t.Fatalf("error is empty: %#v", verdict)
+			}
+			if tc.kidStatus != "" && verdict["kid_status"] != tc.kidStatus {
+				t.Fatalf("kid_status = %v, want %s", verdict["kid_status"], tc.kidStatus)
+			}
+			if verdict[tc.label] == nil {
+				t.Fatalf("%s is missing: %#v", tc.label, verdict)
+			}
+		})
+	}
+}
+
+func TestVerifyEndpointLeewayAdmitsRecentlyExpired(t *testing.T) {
+	ts, ring := newTestServer(t, keyring.AlgRS256)
+	token := mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "exp": "-30s"})
+
+	resp, data := postJSON(t, ts.URL+"/verify", `{"token":"`+token+`","leeway":"1m"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", resp.StatusCode, data)
+	}
+	verdict := decodeVerdict(t, data)
+	if verdict["valid"] != true {
+		t.Fatalf("verdict = %#v", verdict)
+	}
+}
+
+func TestVerifyEndpointRequestErrors(t *testing.T) {
+	ts, _ := newTestServer(t, keyring.AlgRS256)
+
+	cases := map[string]string{
+		"missing token":      `{}`,
+		"empty token":        `{"token":""}`,
+		"blank token":        `{"token":"   "}`,
+		"invalid json":       `{invalid`,
+		"unknown jwks field": `{"token":"x","jwks":{}}`,
+		"unknown jwks_url":   `{"token":"x","jwks_url":"http://example.invalid"}`,
+		"unknown issuer":     `{"token":"x","issuer":"http://example.invalid"}`,
+		"empty alg list":     `{"token":"x","alg":[]}`,
+		"disabled alg":       `{"token":"x","alg":["HS256"]}`,
+		"bad leeway":         `{"token":"x","leeway":"soon"}`,
+		"negative leeway":    `{"token":"x","leeway":"-1s"}`,
+		"bad audience shape": `{"token":"x","aud":123}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			resp, data := postJSON(t, ts.URL+"/verify", body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", resp.StatusCode, data)
+			}
+			if !strings.Contains(string(data), "error") {
+				t.Fatalf("error response = %s", data)
+			}
+		})
+	}
+
+	t.Run("oversized body", func(t *testing.T) {
+		body := `{"token":"` + strings.Repeat("a", maxRequestBody+1) + `"}`
+		resp, data := postJSON(t, ts.URL+"/verify", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (body %s)", resp.StatusCode, data)
+		}
+	})
+}
+
+func TestVerifyEndpointRejectsMethodsAndExternalKeysWithoutFetching(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+	t.Cleanup(srv.Close)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/verify", nil)
+	getRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /verify status = %d, want 405", getRec.Code)
+	}
+
+	originalTransport := http.DefaultTransport
+	transport := &recordingTransport{}
+	http.DefaultTransport = transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	for _, body := range []string{
+		`{"token":"x","jwks":{}}`,
+		`{"token":"x","jwks_url":"http://example.invalid/jwks.json"}`,
+		`{"token":"x","issuer":"http://example.invalid"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/verify", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400", body, rec.Code)
+		}
+	}
+	if transport.calls != 0 {
+		t.Fatalf("verification made %d outbound requests, want 0", transport.calls)
+	}
+}
+
+type recordingTransport struct {
+	calls int
+}
+
+func (r *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.calls++
+	return nil, errors.New("unexpected outbound request")
+}
+
+func TestVerifyEndpointMapsUnclassifiableTo500(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	token := mintVerifyToken(t, ring, map[string]any{"sub": "user-1"})
+
+	srv := New(&internalErrRing{}, nil, testIssuer, "test-version", 100, 200)
+	t.Cleanup(srv.Close)
+
+	req := httptest.NewRequest(http.MethodPost, "/verify", strings.NewReader(`{"token":"`+token+`"}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", rec.Header().Get("Cache-Control"))
+	}
+	if !strings.Contains(rec.Body.String(), "error") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestVerifyEndpointAuditsWithoutTokenContents(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+
+	var buf bytes.Buffer
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200, WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	t.Cleanup(srv.Close)
+
+	resp, err := factory.Mint(&tokenfactory.Request{
+		Alg:    string(keyring.AlgRS256),
+		Claims: map[string]any{"sub": "sensitive-subject", "exp": "-5m"},
+	})
+	if err != nil {
+		t.Fatalf("Mint() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/verify", strings.NewReader(`{"token":"`+resp.AccessToken+`"}`))
+	req.Header.Set("X-Request-ID", "audit-request-id")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("decode audit log: %v (%s)", err, buf.String())
+	}
+	if entry["event"] != "token_verified" {
+		t.Fatalf("event = %v", entry["event"])
+	}
+	if entry["valid"] != false || entry["reason"] != "expired" {
+		t.Fatalf("audit outcome = %#v", entry)
+	}
+	if entry["kid"] == "" || entry["kid_status"] != "active" || entry["alg"] != "RS256" {
+		t.Fatalf("audit key fields = %#v", entry)
+	}
+	if entry["request_id"] != "audit-request-id" || entry["path"] != "/verify" || entry["method"] != http.MethodPost {
+		t.Fatalf("audit request fields = %#v", entry)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, resp.AccessToken) || strings.Contains(logged, "sensitive-subject") {
+		t.Fatalf("audit log leaked token or claims: %s", logged)
 	}
 }

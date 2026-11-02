@@ -2,27 +2,27 @@
 
 ## 1. Keyring key-status surface
 
-- [ ] 1.1 Add `KeyStatus` (`active`/`retired`) and `Lookup(kid) (crypto.PublicKey, KeyStatus, error)` to `internal/keyring` and add the method to the `Ring` interface; verify with unit tests for an active kid, a retired kid inside grace, and an unknown kid returning `ErrKeyNotFound`
-- [ ] 1.2 Confirm `Lookup` reads the same snapshot and lock as `JWKS`/`Snapshot`; verify with `go test ./internal/keyring` and a rotation test under `-race`
+- [x] 1.1 Add `KeyStatus` (`active`/`retired`) and `Lookup(kid) (crypto.PublicKey, KeyStatus, error)` to `internal/keyring` and add the method to the `Ring` interface; verify with unit tests for an active kid, a retired kid inside grace, and an unknown kid returning `ErrKeyNotFound`
+- [x] 1.2 Confirm `Lookup` reads the same snapshot and lock as `JWKS`/`Snapshot`; verify with `go test ./internal/keyring` and a rotation test under `-race`
 
 ## 2. Verification classifier
 
-- [ ] 2.1 Create `internal/verify` with the `Input`, `KeySource`, and `Verdict` types plus the closed reason constants; verify `go build ./...` succeeds with the new package
-- [ ] 2.2 Implement the unverified diagnostic pass and the explicit algorithm and key checks; verify table tests report `malformed`, `alg`, and `kid`
-- [ ] 2.3 Implement the verified pass with valid-method, issuer, audience, leeway, and issued-at options, and map library sentinels to reasons; verify tests cover `signature`, `expired`, `not_yet_valid`, `issuer`, and `audience`
-- [ ] 2.4 Implement claims labeling and numeric-date echoing; verify tests assert `claims` only after signature verification, `unverified_claims` otherwise, and neither for malformed input
-- [ ] 2.5 Implement `kid_status` from `KeySource.Lookup`; verify active, retired, and unknown cases, including a valid verdict for a retired key
-- [ ] 2.6 Verify deterministic precedence with the injected `Now`: expired plus unknown kid yields `kid`, expired plus bad signature yields `signature`, and audience plus expired yields `expired`
-- [ ] 2.7 Add the `jwx` parity matrix over RS256, ES256, and EdDSA; verify both libraries accept freshly minted tokens and reject tampered, expired, and wrong-issuer tokens
-- [ ] 2.8 Add hand-built `alg: none` and `HS256` header tokens over real payloads; verify the verdict reason is `alg`
+- [x] 2.1 Create `internal/verify` with the `Input`, `KeySource`, and `Verdict` types plus the closed reason constants; verify `go build ./...` succeeds with the new package
+- [x] 2.2 Implement the unverified diagnostic pass and the explicit algorithm and key checks; verify table tests report `malformed`, `alg`, and `kid`
+- [x] 2.3 Implement the verified pass with valid-method, issuer, audience, leeway, and issued-at options, and map library sentinels to reasons; verify tests cover `signature`, `expired`, `not_yet_valid`, `issuer`, and `audience`
+- [x] 2.4 Implement claims labeling and numeric-date echoing; verify tests assert `claims` only after signature verification, `unverified_claims` otherwise, and neither for malformed input
+- [x] 2.5 Implement `kid_status` from `KeySource.Lookup`; verify active, retired, and unknown cases, including a valid verdict for a retired key
+- [x] 2.6 Verify deterministic precedence with the injected `Now`: expired plus unknown kid yields `kid`, expired plus bad signature yields `signature`, and audience plus expired yields `expired`
+- [x] 2.7 Add the `jwx` parity matrix over RS256, ES256, and EdDSA; verify both libraries accept freshly minted tokens and reject tampered, expired, and wrong-issuer tokens
+- [x] 2.8 Add hand-built `alg: none` and `HS256` header tokens over real payloads; verify the verdict reason is `alg`
 
 ## 3. POST /verify endpoint
 
-- [ ] 3.1 Register `POST /verify`, decode with `DisallowUnknownFields`, enforce the 1 MiB limit, accept `aud` as a string or array, and validate `alg` and `leeway`; verify handler tests for `200`, `400`, and `405`
-- [ ] 3.2 Verify a request carrying `jwks`, `jwks_url`, or `issuer` is rejected with `400` and that the handler constructs no outbound client
-- [ ] 3.3 Map unclassifiable failures to `500`, set `Cache-Control: no-store`, and emit the `token_verified` audit event; verify tests assert the header, status, and that the token and claim values never appear in logs
-- [ ] 3.4 Add `POST /verify` to the index endpoint list and document the endpoint and verdict schemas in `docs/openapi.yaml`; verify `GET /` advertises the route and the OpenAPI document still parses as YAML
-- [ ] 3.5 Add the `/verify` API section to `README.md`, including the self-check invariant and claims labeling; verify the documented request against a running `serve` returns the described response
+- [x] 3.1 Register `POST /verify`, decode with `DisallowUnknownFields`, enforce the 1 MiB limit, accept `aud` as a string or array, and validate `alg` and `leeway`; verify handler tests for `200`, `400`, and `405`
+- [x] 3.2 Verify a request carrying `jwks`, `jwks_url`, or `issuer` is rejected with `400` and that the handler constructs no outbound client
+- [x] 3.3 Map unclassifiable failures to `500`, set `Cache-Control: no-store`, and emit the `token_verified` audit event; verify tests assert the header, status, and that the token and claim values never appear in logs
+- [x] 3.4 Add `POST /verify` to the index endpoint list and document the endpoint and verdict schemas in `docs/openapi.yaml`; verify `GET /` advertises the route and the OpenAPI document still parses as YAML
+- [x] 3.5 Add the `/verify` API section to `README.md`, including the self-check invariant and claims labeling; verify the documented request against a running `serve` returns the described response
 
 ## 4. decode command
 

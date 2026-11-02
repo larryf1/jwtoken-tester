@@ -10,12 +10,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/larryf1/jwtoken-tester/v2/internal/keyring"
 	"github.com/larryf1/jwtoken-tester/v2/internal/tokenfactory"
+	"github.com/larryf1/jwtoken-tester/v2/internal/verify"
 	"golang.org/x/time/rate"
 )
 
@@ -141,6 +143,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
 	mux.HandleFunc("POST /token", s.handleToken)
 	mux.HandleFunc("POST /v2/oauth/token", s.handleOAuthToken)
+	mux.HandleFunc("POST /verify", s.handleVerify)
 
 	return s.securityHeaders(s.rateLimit(s.requestID(mux)))
 }
@@ -218,6 +221,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			"GET /.well-known/openid-configuration",
 			"POST /token",
 			"POST /v2/oauth/token",
+			"POST /verify",
 		},
 	})
 }
@@ -354,6 +358,116 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		"has_custom_headers": len(req.Headers) > 0,
 	})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// verifyRequest is the self-check request. Unknown fields are rejected on
+// purpose: a client that sends jwks, jwks_url, issuer, or a typo gets a 400
+// instead of a silently ignored field and a misleading verdict.
+type verifyRequest struct {
+	Token  string    `json:"token"`
+	Aud    audience  `json:"aud"`
+	Alg    *[]string `json:"alg"`
+	Leeway string    `json:"leeway"`
+}
+
+type audience []string
+
+func (a *audience) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*a = nil
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		*a = audience{single}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return errors.New("aud must be a string or an array of strings")
+	}
+	*a = audience(many)
+	return nil
+}
+
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+
+	var req verifyRequest
+	body := http.MaxBytesReader(w, r.Body, maxRequestBody)
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+
+	tokenValue := strings.TrimSpace(req.Token)
+	if tokenValue == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+
+	var leeway time.Duration
+	if req.Leeway != "" {
+		parsed, err := time.ParseDuration(req.Leeway)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "leeway must be a non-negative Go duration")
+			return
+		}
+		leeway = parsed
+	}
+
+	var allowed []string
+	if req.Alg != nil {
+		if len(*req.Alg) == 0 {
+			writeError(w, http.StatusBadRequest, "alg must not be empty")
+			return
+		}
+		enabled := s.ring.EnabledAlgorithms()
+		for _, alg := range *req.Alg {
+			if alg == "" || !slices.Contains(enabled, keyring.Algorithm(alg)) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("algorithm %q is not enabled", alg))
+				return
+			}
+		}
+		allowed = append(allowed, (*req.Alg)...)
+	}
+
+	verdict, err := verify.Verify(verify.Input{
+		Token:          tokenValue,
+		Keys:           verify.RingKeySource{Ring: s.ring},
+		ExpectedIssuer: s.Issuer,
+		AllowedAlgs:    allowed,
+		Audience:       []string(req.Aud),
+		Leeway:         leeway,
+		Now:            time.Now().UTC(),
+	})
+	if err != nil {
+		s.logTokenEvent(r, "token_verified", map[string]any{
+			"valid": false,
+			"error": "verification failed",
+		})
+		writeError(w, http.StatusInternalServerError, "verification failed")
+		return
+	}
+
+	attrs := map[string]any{"valid": verdict.Valid}
+	if !verdict.Valid {
+		attrs["reason"] = string(verdict.Reason)
+	}
+	if verdict.Kid != "" {
+		attrs["kid"] = verdict.Kid
+	}
+	if verdict.KidStatus != "" {
+		attrs["kid_status"] = string(verdict.KidStatus)
+	}
+	if verdict.Alg != "" {
+		attrs["alg"] = verdict.Alg
+	}
+	s.logTokenEvent(r, "token_verified", attrs)
+
+	writeJSON(w, http.StatusOK, verdict)
 }
 
 func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {

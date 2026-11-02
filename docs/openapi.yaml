@@ -25,6 +25,8 @@ tags:
     description: JWKS and key management endpoints
   - name: Tokens
     description: Token minting endpoint
+  - name: Verification
+    description: Self-check token verification
   - name: Discovery
     description: OpenID Connect discovery
 
@@ -206,6 +208,70 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /verify:
+    post:
+      tags: [Verification]
+      summary: Verify a token against this issuer's live keyring
+      description: |
+        Self-check verification: the token is checked only against the running
+        issuer's live keyring. The endpoint accepts no caller-supplied key
+        material or key locations (`jwks`, `jwks_url`, `issuer`) and performs no
+        outbound network request. Unknown request fields are rejected with `400`.
+
+        The issuer claim is always validated against this server's configured
+        issuer. The accepted algorithms default to the enabled signing
+        algorithms and can be narrowed with `alg`. A request may supply `aud`
+        and `leeway` to simulate consumer expectations.
+
+        Failure reasons are a closed, ordered set: `malformed`, `alg`, `kid`,
+        `signature`, `expired`, `not_yet_valid`, `issuer`, `audience`.
+        Claims appear under `claims` only after signature verification, under
+        `unverified_claims` before it, and under neither for malformed input.
+      operationId: verifyToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        "200":
+          description: Verification completed; inspect `valid` and `reason`
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+              description: Verification responses are never cacheable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        "400":
+          description: Invalid request (missing token, unknown field, bad alg or leeway, oversized body)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Verification failed for a reason outside the closed reason set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /v2/oauth/token:
     post:
       tags: [Tokens]
@@ -295,6 +361,7 @@ components:
             - "GET /.well-known/openid-configuration"
             - "POST /token"
             - "POST /v2/oauth/token"
+            - "POST /verify"
 
     HealthResponse:
       type: object
@@ -449,6 +516,72 @@ components:
           type: integer
           description: Token lifetime in seconds
           example: 3600
+
+    VerifyRequest:
+      type: object
+      required: [token]
+      additionalProperties: false
+      properties:
+        token:
+          type: string
+          description: JWT in JWS Compact Serialization
+          example: "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9..."
+        aud:
+          description: Expected audience; a match against any member passes.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          example: my-service
+        alg:
+          type: array
+          minItems: 1
+          description: Non-empty subset of enabled algorithms to accept.
+          items:
+            type: string
+            enum: [RS256, ES256, EdDSA]
+          example: [RS256]
+        leeway:
+          type: string
+          description: Go duration widening the exp/nbf/iat window.
+          example: 30s
+
+    VerifyResponse:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+        reason:
+          type: string
+          description: Closed failure reason; absent when valid.
+          enum: [malformed, alg, kid, signature, expired, not_yet_valid, issuer, audience]
+        error:
+          type: string
+          description: Human-readable failure message; absent when valid.
+        header:
+          type: object
+          additionalProperties: true
+          description: Decoded JOSE header
+        claims:
+          type: object
+          additionalProperties: true
+          description: Token claims, present only after signature verification succeeded.
+        unverified_claims:
+          type: object
+          additionalProperties: true
+          description: Token claims parsed before signature verification; never present with `claims`.
+        kid:
+          type: string
+          description: Key ID from the token header, when readable.
+        kid_status:
+          type: string
+          enum: [active, retired, unknown]
+          description: Whether the token's key is active, retired inside its grace window, or absent.
+        alg:
+          type: string
+          description: Algorithm from the token header, when readable.
 
     ErrorResponse:
       type: object

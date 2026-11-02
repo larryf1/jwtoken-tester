@@ -39,6 +39,7 @@ of hacking basic-auth shortcuts into your middleware.
 │   GET  /.well-known/openid-configuration     │
 │   POST /token        ← mint arbitrary JWTs   │
 │   POST /v2/oauth/token ← mint v2-style JWTs  │
+│   POST /verify       ← self-check a token    │
 └──────────────────────────────────────────────┘
 ```
 
@@ -264,6 +265,52 @@ Rules:
 
 Error responses are `{"error": "<message>"}` with status `400` (bad JSON, unsupported alg,
 lifetime cap exceeded), `405` (wrong method), or `503` (no active signing key).
+
+### `POST /verify`
+
+Self-check a token against the running issuer's own live keyring. This is deliberately **not** a
+general-purpose verifier: the request may not carry key material or key locations (`jwks`,
+`jwks_url`, or `issuer` are rejected with `400`), and the endpoint never makes an outbound request.
+Use it to confirm what this issuer would accept without wiring up your own verification stack.
+
+```sh
+curl -s http://127.0.0.1:8080/verify -d "{\"token\":\"$ACCESS_TOKEN\"}"
+```
+
+Request body:
+
+| Field    | Type             | Description                                                          |
+|----------|------------------|----------------------------------------------------------------------|
+| `token`  | string, required | JWT in JWS Compact Serialization                                     |
+| `aud`    | string or array  | Expected audience; matching any member passes                        |
+| `alg`    | array, optional  | Non-empty subset of enabled algorithms to accept (default: all enabled) |
+| `leeway` | string, optional | Go duration widening the `exp`/`nbf`/`iat` window, e.g. `30s`        |
+
+Unknown fields are rejected with `400`. The response is always `200` when a verdict was reached;
+inspect `valid` and `reason`:
+
+```json
+{
+  "valid": false,
+  "reason": "audience",
+  "error": "token audience does not match",
+  "header": {"alg": "RS256", "kid": "..."},
+  "claims": {"iss": "http://127.0.0.1:8080", "aud": ["my-service"]},
+  "kid": "...",
+  "kid_status": "active",
+  "alg": "RS256"
+}
+```
+
+- `reason` is one of `malformed`, `alg`, `kid`, `signature`, `expired`, `not_yet_valid`,
+  `issuer`, or `audience`, checked in that order. Exactly one reason is reported.
+- Claims appear under `claims` only after the signature verified, under `unverified_claims`
+  before it, and under neither for `malformed` input. Never trust `unverified_claims`.
+- `kid_status` is `active`, `retired` (still inside its grace window), or `unknown`.
+- `iss` is always checked against this server's configured issuer.
+- Verification responses carry `Cache-Control: no-store`.
+
+A `500` means verification failed outside the closed reason set; correct requests never produce it.
 
 ### `POST /v2/oauth/token`
 

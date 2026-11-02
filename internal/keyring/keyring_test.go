@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -467,11 +468,14 @@ type failingKeyRing struct {
 
 func (f *failingKeyRing) Signer(Algorithm) (*Key, error)      { return nil, f.err }
 func (f *failingKeyRing) ActiveKid(Algorithm) (string, error) { return "", f.err }
-func (f *failingKeyRing) JWKS() (jwk.Set, error)              { return nil, f.err }
-func (f *failingKeyRing) Rotate() error                       { return f.err }
-func (f *failingKeyRing) RotateAt(time.Time) error            { return f.err }
-func (f *failingKeyRing) Prune()                              {}
-func (f *failingKeyRing) PruneAt(time.Time)                   {}
+func (f *failingKeyRing) Lookup(string) (crypto.PublicKey, KeyStatus, error) {
+	return nil, "", f.err
+}
+func (f *failingKeyRing) JWKS() (jwk.Set, error)   { return nil, f.err }
+func (f *failingKeyRing) Rotate() error            { return f.err }
+func (f *failingKeyRing) RotateAt(time.Time) error { return f.err }
+func (f *failingKeyRing) Prune()                   {}
+func (f *failingKeyRing) PruneAt(time.Time)        {}
 func (f *failingKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	if interval <= 0 {
@@ -559,6 +563,9 @@ type failingActiveKidKeyRing struct {
 func (f *failingActiveKidKeyRing) Signer(Algorithm) (*Key, error) { return &Key{}, nil }
 func (f *failingActiveKidKeyRing) ActiveKid(Algorithm) (string, error) {
 	return "", errors.New("no active key")
+}
+func (f *failingActiveKidKeyRing) Lookup(string) (crypto.PublicKey, KeyStatus, error) {
+	return nil, "", errors.New("not found")
 }
 func (f *failingActiveKidKeyRing) JWKS() (jwk.Set, error)   { return jwk.NewSet(), nil }
 func (f *failingActiveKidKeyRing) Rotate() error            { return nil }
@@ -820,6 +827,80 @@ func TestPublicKeyByKIDActiveRetiredPrunedAndUnknown(t *testing.T) {
 	if _, err := r.PublicKeyByKID("unknown-kid"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("PublicKeyByKID(unknown) error = %v, want ErrKeyNotFound", err)
 	}
+}
+
+func TestLookupReportsActiveRetiredPrunedAndUnknown(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	active, err := r.Signer(AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+
+	got, status, err := r.Lookup(active.Kid())
+	if err != nil {
+		t.Fatalf("Lookup(active) error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("Lookup(active) returned a nil key")
+	}
+	if status != KeyStatusActive {
+		t.Fatalf("Lookup(active) status = %q, want %q", status, KeyStatusActive)
+	}
+
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	got, status, err = r.Lookup(active.Kid())
+	if err != nil {
+		t.Fatalf("Lookup(retired) error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("Lookup(retired) returned a nil key")
+	}
+	if status != KeyStatusRetired {
+		t.Fatalf("Lookup(retired) status = %q, want %q", status, KeyStatusRetired)
+	}
+
+	r.PruneAt(time.Now().Add(2 * time.Hour))
+	if _, _, err := r.Lookup(active.Kid()); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Lookup(pruned) error = %v, want ErrKeyNotFound", err)
+	}
+	if _, _, err := r.Lookup("unknown-kid"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Lookup(unknown) error = %v, want ErrKeyNotFound", err)
+	}
+}
+
+func TestLookupIsSafeDuringRotationAndPrune(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	k, err := r.Signer(AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+	kid := k.Kid()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			now := time.Now()
+			if err := r.RotateAt(now); err != nil {
+				t.Errorf("RotateAt() error = %v", err)
+				return
+			}
+			r.PruneAt(now.Add(2 * time.Hour))
+		}
+	}()
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_, _, _ = r.Lookup(kid)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestJWKByKIDReturnsActiveKey(t *testing.T) {
