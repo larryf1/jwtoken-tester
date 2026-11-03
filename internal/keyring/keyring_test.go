@@ -12,11 +12,31 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwk"
 )
+
+// lockedBuffer is a concurrency-safe log sink. Rotation logs are written from a
+// background goroutine while tests inspect the captured output.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func newTestRing(t *testing.T, grace time.Duration, algs ...Algorithm) *KeyRing {
 	t.Helper()
@@ -327,7 +347,7 @@ func TestStartRotationDisabledWhenIntervalZero(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := r.StartRotation(ctx, 0, logger)
 	select {
@@ -346,7 +366,7 @@ func TestStartRotationCancellationClosesDone(t *testing.T) {
 	r := newTestRing(t, time.Hour, AlgRS256)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := r.StartRotation(ctx, 10*time.Millisecond, logger)
 	cancel()
@@ -363,7 +383,7 @@ func TestStartRotationRotatesAndPrunes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	r.StartRotation(ctx, 10*time.Millisecond, logger)
 
@@ -467,11 +487,14 @@ type failingKeyRing struct {
 
 func (f *failingKeyRing) Signer(Algorithm) (*Key, error)      { return nil, f.err }
 func (f *failingKeyRing) ActiveKid(Algorithm) (string, error) { return "", f.err }
-func (f *failingKeyRing) JWKS() (jwk.Set, error)              { return nil, f.err }
-func (f *failingKeyRing) Rotate() error                       { return f.err }
-func (f *failingKeyRing) RotateAt(time.Time) error            { return f.err }
-func (f *failingKeyRing) Prune()                              {}
-func (f *failingKeyRing) PruneAt(time.Time)                   {}
+func (f *failingKeyRing) Lookup(string) (crypto.PublicKey, KeyStatus, error) {
+	return nil, "", f.err
+}
+func (f *failingKeyRing) JWKS() (jwk.Set, error)   { return nil, f.err }
+func (f *failingKeyRing) Rotate() error            { return f.err }
+func (f *failingKeyRing) RotateAt(time.Time) error { return f.err }
+func (f *failingKeyRing) Prune()                   {}
+func (f *failingKeyRing) PruneAt(time.Time)        {}
 func (f *failingKeyRing) StartRotation(ctx context.Context, interval time.Duration, logger *slog.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	if interval <= 0 {
@@ -519,7 +542,7 @@ func TestStartRotationErrorPaths(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	r := &failingKeyRing{err: errors.New("rotate failed")}
@@ -538,7 +561,7 @@ func TestStartRotationActiveKidErrorPath(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	r := &failingActiveKidKeyRing{}
@@ -559,6 +582,9 @@ type failingActiveKidKeyRing struct {
 func (f *failingActiveKidKeyRing) Signer(Algorithm) (*Key, error) { return &Key{}, nil }
 func (f *failingActiveKidKeyRing) ActiveKid(Algorithm) (string, error) {
 	return "", errors.New("no active key")
+}
+func (f *failingActiveKidKeyRing) Lookup(string) (crypto.PublicKey, KeyStatus, error) {
+	return nil, "", errors.New("not found")
 }
 func (f *failingActiveKidKeyRing) JWKS() (jwk.Set, error)   { return jwk.NewSet(), nil }
 func (f *failingActiveKidKeyRing) Rotate() error            { return nil }
@@ -740,7 +766,7 @@ func TestStartRotationDisabledWhenIntervalNegative(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := r.StartRotation(ctx, -time.Hour, logger)
 	select {
@@ -820,6 +846,80 @@ func TestPublicKeyByKIDActiveRetiredPrunedAndUnknown(t *testing.T) {
 	if _, err := r.PublicKeyByKID("unknown-kid"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("PublicKeyByKID(unknown) error = %v, want ErrKeyNotFound", err)
 	}
+}
+
+func TestLookupReportsActiveRetiredPrunedAndUnknown(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	active, err := r.Signer(AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+
+	got, status, err := r.Lookup(active.Kid())
+	if err != nil {
+		t.Fatalf("Lookup(active) error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("Lookup(active) returned a nil key")
+	}
+	if status != KeyStatusActive {
+		t.Fatalf("Lookup(active) status = %q, want %q", status, KeyStatusActive)
+	}
+
+	if err := r.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	got, status, err = r.Lookup(active.Kid())
+	if err != nil {
+		t.Fatalf("Lookup(retired) error = %v", err)
+	}
+	if got == nil {
+		t.Fatal("Lookup(retired) returned a nil key")
+	}
+	if status != KeyStatusRetired {
+		t.Fatalf("Lookup(retired) status = %q, want %q", status, KeyStatusRetired)
+	}
+
+	r.PruneAt(time.Now().Add(2 * time.Hour))
+	if _, _, err := r.Lookup(active.Kid()); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Lookup(pruned) error = %v, want ErrKeyNotFound", err)
+	}
+	if _, _, err := r.Lookup("unknown-kid"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Lookup(unknown) error = %v, want ErrKeyNotFound", err)
+	}
+}
+
+func TestLookupIsSafeDuringRotationAndPrune(t *testing.T) {
+	r := newTestRing(t, time.Hour, AlgRS256)
+	k, err := r.Signer(AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+	kid := k.Kid()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			now := time.Now()
+			if err := r.RotateAt(now); err != nil {
+				t.Errorf("RotateAt() error = %v", err)
+				return
+			}
+			r.PruneAt(now.Add(2 * time.Hour))
+		}
+	}()
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_, _, _ = r.Lookup(kid)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestJWKByKIDReturnsActiveKey(t *testing.T) {

@@ -39,6 +39,7 @@ of hacking basic-auth shortcuts into your middleware.
 │   GET  /.well-known/openid-configuration     │
 │   POST /token        ← mint arbitrary JWTs   │
 │   POST /v2/oauth/token ← mint v2-style JWTs  │
+│   POST /verify       ← self-check a token    │
 └──────────────────────────────────────────────┘
 ```
 
@@ -208,16 +209,61 @@ pull the JWKS from `/.well-known/jwks.json` like any other IdP.
 
 ### CLI commands
 
-The binary has three modes:
+The binary has these modes:
 
 - `serve` — run the HTTP issuer (used by the container and `make run`).
 - `print-token` — mint one token and print only the `access_token` to stdout, useful in shell
   scripts that cannot reach a running server:
   `jwtoken-tester print-token --claims '{"sub":"user-1","aud":["my-service"]}' --alg ES256`
+- `decode` — print a token's JOSE header and claims without keys, network access, or trust.
+- `verify` — verify a token against a JWKS URL, a JWKS file, or a discovered issuer.
 - `healthcheck` — probe `/healthz` using the binary itself, so distroless containers do not need
   `curl` or `wget`.
 
 Run `jwtoken-tester help` for the full flag list.
+
+#### `decode`
+
+`decode` prints the JOSE header and payload as indented JSON. It needs no keys, makes no network
+request, and does not validate the signature, time claims, issuer, or audience, so it works on
+expired and foreign tokens too. It exits `0` for any structurally decodable three-segment compact
+JWS and non-zero otherwise (including missing input).
+
+```sh
+jwtoken-tester decode "$ACCESS_TOKEN"
+jwtoken-tester decode < token.txt
+```
+
+#### `verify`
+
+`verify` checks a token against keys from `--jwks <url|file>` or discovered from
+`--issuer <url>`. Key retrieval happens in the client process; the local server is not involved.
+Exactly one of `--jwks` or `--issuer` is required.
+
+- `--jwks` accepts an `http(s)` URL or a file path. `--jwks` alone does not check `iss`, because a
+  JWKS carries no issuer identity.
+- `--issuer` fetches `<issuer>/.well-known/openid-configuration`, loads its `jwks_uri`, and checks
+  `iss` against the discovery document's `issuer` (falling back to the flag value).
+- `--aud`, repeatable `--alg`, and `--leeway` add consumer expectations. `--json` prints the same
+  verdict envelope that `POST /verify` returns.
+- Exit codes are `0` valid, `1` invalid verdict, and `2` for operational failures such as an
+  unreadable key source, a failed fetch, or a usage error.
+
+Flags must precede the positional token because the command uses Go's standard flag parsing. Pipe
+the token on stdin to avoid that ordering or to keep it out of the process list:
+
+```sh
+TOKEN=$(curl -s http://127.0.0.1:8080/token | jq -r .access_token)
+
+jwtoken-tester verify --jwks http://127.0.0.1:8080/.well-known/jwks.json "$TOKEN"
+jwtoken-tester verify --issuer http://127.0.0.1:8080 --aud my-service --json "$TOKEN"
+jwtoken-tester verify --jwks ./jwks.json --alg RS256 --leeway 30s < token.txt
+```
+
+Tokens minted by `print-token` use a throwaway in-memory keyring, so they cannot verify against a
+running `serve` process, and restarting `serve` discards its keys. When the verdict is
+`kid`/`unknown`, `verify` prints a hint explaining this. Mint the token from the same server whose
+JWKS you verify against, or use the keyring that signed it.
 
 ### Verifying tokens on jwt.io
 
@@ -264,6 +310,52 @@ Rules:
 
 Error responses are `{"error": "<message>"}` with status `400` (bad JSON, unsupported alg,
 lifetime cap exceeded), `405` (wrong method), or `503` (no active signing key).
+
+### `POST /verify`
+
+Self-check a token against the running issuer's own live keyring. This is deliberately **not** a
+general-purpose verifier: the request may not carry key material or key locations (`jwks`,
+`jwks_url`, or `issuer` are rejected with `400`), and the endpoint never makes an outbound request.
+Use it to confirm what this issuer would accept without wiring up your own verification stack.
+
+```sh
+curl -s http://127.0.0.1:8080/verify -d "{\"token\":\"$ACCESS_TOKEN\"}"
+```
+
+Request body:
+
+| Field    | Type             | Description                                                          |
+|----------|------------------|----------------------------------------------------------------------|
+| `token`  | string, required | JWT in JWS Compact Serialization                                     |
+| `aud`    | string or array  | Expected audience; matching any member passes                        |
+| `alg`    | array, optional  | Non-empty subset of enabled algorithms to accept (default: all enabled) |
+| `leeway` | string, optional | Go duration widening the `exp`/`nbf`/`iat` window, e.g. `30s`        |
+
+Unknown fields are rejected with `400`. The response is always `200` when a verdict was reached;
+inspect `valid` and `reason`:
+
+```json
+{
+  "valid": false,
+  "reason": "audience",
+  "error": "token audience does not match",
+  "header": {"alg": "RS256", "kid": "..."},
+  "claims": {"iss": "http://127.0.0.1:8080", "aud": ["my-service"]},
+  "kid": "...",
+  "kid_status": "active",
+  "alg": "RS256"
+}
+```
+
+- `reason` is one of `malformed`, `alg`, `kid`, `signature`, `expired`, `not_yet_valid`,
+  `issuer`, or `audience`, checked in that order. Exactly one reason is reported.
+- Claims appear under `claims` only after the signature verified, under `unverified_claims`
+  before it, and under neither for `malformed` input. Never trust `unverified_claims`.
+- `kid_status` is `active`, `retired` (still inside its grace window), or `unknown`.
+- `iss` is always checked against this server's configured issuer.
+- Verification responses carry `Cache-Control: no-store`.
+
+A `500` means verification failed outside the closed reason set; correct requests never produce it.
 
 ### `POST /v2/oauth/token`
 
@@ -433,14 +525,14 @@ Shipped:
 - [x] Distroless Docker image + docker-compose example wired to a demo protected service
 - [x] Public, leak-free `pkg/tester` API (neutral algorithm/request types, JWKS/PEM helpers,
       deterministic keys, and a resource-only `Close`)
+- [x] Token verification and debugging: `POST /verify` self-check endpoint and `decode` /
+      `verify` CLI commands
 
 Candidate enhancements below are **not commitments**. See [`FUTURE.md`](FUTURE.md) for effort,
 value, design notes, and open questions.
 
-- [ ] Verification and debugging: `POST /verify`, RFC 7662 `POST /introspect`, and
-       `jwtoken-tester decode` / `verify` CLI commands
-- [ ] Standards-compliant `POST /oauth/token` (client credentials) plus richer discovery
-      metadata, RFC 8414 metadata, and `/userinfo`
+- [ ] Standards-compliant `POST /oauth/token` (client credentials), RFC 7662 `POST /introspect`,
+      plus richer discovery metadata, RFC 8414 metadata, and `/userinfo`
 - [ ] More algorithms (PS256/PS384/PS512, RS384/RS512, ES384/ES512, optional HMAC) and
       negative-token controls (`alg: none`, malformed tokens, `kid`/`typ`/`x5c` overrides)
 - [ ] Claim profiles for common IdPs (Entra ID, Auth0, Keycloak, Okta, Cognito) and

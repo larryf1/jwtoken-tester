@@ -31,7 +31,7 @@ exposure, native TLS) are explicitly opt-in and must be labeled loudly.
 | # | Candidate | Effort | Value | Why it matters |
 |---|-----------|--------|-------|----------------|
 | 1 | Public `pkg/tester` API + leak-free lifecycle | — | Shipped | Delivered in v2.4.0 with a neutral surface and resource-only `Close`. |
-| 2 | Verification, introspection, and `decode`/`verify` CLI | M | High | Turns the tool from a token source into a debugging aid. |
+| 2 | Verification and `decode`/`verify` CLI | — | Shipped | `POST /verify` and both CLI commands shipped; introspection deferred to #3. |
 | 3 | Standards-compliant OAuth token endpoint + richer discovery | M | High | Generic OAuth/OIDC clients cannot use the advertised endpoint today. |
 | 4 | More algorithms + negative-token controls | M | High | Broadens consumer compatibility and negative-path coverage. |
 | 5 | Claim/IdP profiles + `id_token`/`/userinfo` | M | High | Makes tokens resemble real gateways instead of hand-built maps. |
@@ -98,34 +98,24 @@ endpoint as the only practical API.
 for internal tests, or be replaced by stable public wrappers? Does `pkg/tester`
 get the same semantic-versioning guarantee as the binary?
 
-## 2. Verification, introspection, and debugging CLI
+## 2. Verification and debugging CLI
 
-- **Status:** Candidate
+- **Status:** ✅ Shipped (verification and CLI); introspection deferred to #3
 - **Effort:** Medium
 - **Value:** High
 
-**Problem.** When a consumer rejects a token, the user has to decode it elsewhere
-and compare `kid`, `alg`, `iss`, `aud`, and timestamps by hand against the JWKS.
+**Delivered.** `POST /verify` self-checks a token against the running issuer's live
+keyring and returns `valid`, a closed `reason` (`malformed`, `alg`, `kid`,
+`signature`, `expired`, `not_yet_valid`, `issuer`, `audience`), the parsed header,
+claims labeled as `claims` or `unverified_claims`, and `kid_status`. It accepts no
+caller-supplied keys or key locations and never makes an outbound request.
+`jwtoken-tester decode` prints a token without keys or trust, and
+`jwtoken-tester verify --jwks|--issuer` checks any issuer's token with `--aud`,
+repeatable `--alg`, `--leeway`, stdin, `--json`, and exit codes `0`/`1`/`2`. The
+README documents the API and CLI contracts.
 
-**Proposal.**
-
-- `POST /verify` accepts `{"token": "...", "aud": "...", "alg": ["RS256"]}` and
-  returns `200` with either `{"valid": true, "header": {...}, "claims": {...}}`
-  or `{"valid": false, "reason": "expired", "error": "..."}`. Verify against the
-  live keyring and expose machine-readable failure reasons: `malformed`,
-  `signature`, `alg`, `kid`, `issuer`, `audience`, `expired`, `not_yet_valid`.
-- `POST /introspect` accepts the RFC 7662 form body and returns `active` plus
-  claims, for clients that expect an introspection endpoint. Test issuers can
-  skip client authentication, but document that choice.
-- Add CLI commands: `jwtoken-tester decode <token>` (no key needed) and
-  `jwtoken-tester verify --jwks <url> <token>` (works against any issuer, not
-  just this one).
-- Include a short hint in `/verify` failures, such as which `kid` was used and
-  whether it is active or retired.
-
-**Open questions.** Does introspection belong in a token *issuer*, or is `/verify`
-enough? Should `/verify` accept a caller-supplied JWKS so it can debug tokens
-from other issuers?
+**Remaining.** RFC 7662 `POST /introspect` remains a candidate under the
+OAuth/discovery work in #3.
 
 ## 3. Standards-compliant OAuth token endpoint and discovery
 
@@ -143,6 +133,9 @@ form-encoded `grant_type=client_credentials` to `token_endpoint` and fail.
   `grant_type=client_credentials`, `scope`, and `client_id`/`client_secret`
   (HTTP Basic also accepted). Map `scope` to a `scope` string by default;
   profiles can emit `scp`, `capabilities`, or other shapes.
+- Add `POST /introspect` accepting the RFC 7662 form body and returning `active`
+  plus claims, for clients that expect an introspection endpoint. Test issuers
+  can skip client authentication, but document that choice.
 - Point discovery `token_endpoint` at `/oauth/token`. Keep `/v2/oauth/token` for
   compatibility and document both.
 - Add `/.well-known/oauth-authorization-server` (RFC 8414) and fill out useful
@@ -517,3 +510,4 @@ Smaller ideas that are not detailed above:
 | 2026-11-01 | OpenAPI versioning moved to Semrel | Release automation owns `VERSION` and `docs/openapi.yaml`; the Make target is deprecated |
 | 2026-11-01 | Prioritized library ergonomics and debugging first | The embeddable API leaks internal types and `/token` has no verification counterpart; fix those before adding more IdP features |
 | 2026-11-01 | Private-key import/export remains opt-in and off by default | Preserves the ephemeral-by-default promise while allowing explicit fixture workflows |
+| 2026-11-02 | Shipped `/verify` and the `decode`/`verify` CLI | Verification is in the product; introspection moved to the OAuth/discovery item so its endpoint can be standards-compliant |
