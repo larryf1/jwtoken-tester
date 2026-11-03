@@ -289,6 +289,7 @@ func TestVerifyUnreachableKeySource(t *testing.T) {
 
 func TestVerifyIssuerDiscovery(t *testing.T) {
 	var srv *httptest.Server
+	var issuer *cliTestIssuer
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -297,12 +298,12 @@ func TestVerifyIssuerDiscovery(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(newCLITestIssuer(t, srv.URL).jwks)
+		_, _ = w.Write(issuer.jwks)
 	})
 	srv = httptest.NewServer(mux)
 	defer srv.Close()
 
-	issuer := newCLITestIssuer(t, srv.URL)
+	issuer = newCLITestIssuer(t, srv.URL)
 	token := issuer.mint(t, map[string]any{"sub": "user-1"}, "")
 
 	code, stdout, stderr := runVerifyCLI(t, []string{"--issuer", srv.URL, token}, "")
@@ -335,6 +336,7 @@ func TestVerifyIssuerDiscoveryMissingJWKSURI(t *testing.T) {
 
 func TestVerifyIssuerMismatch(t *testing.T) {
 	var srv *httptest.Server
+	var issuer *cliTestIssuer
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -342,13 +344,13 @@ func TestVerifyIssuerMismatch(t *testing.T) {
 			"jwks_uri": srv.URL + "/jwks",
 		})
 	})
-	issuer := newCLITestIssuer(t, srv.URL)
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(issuer.jwks)
 	})
 	srv = httptest.NewServer(mux)
 	defer srv.Close()
 
+	issuer = newCLITestIssuer(t, srv.URL)
 	token := issuer.mint(t, map[string]any{"sub": "user-1", "iss": "https://attacker.example"}, "")
 
 	code, stdout, _ := runVerifyCLI(t, []string{"--issuer", srv.URL, token}, "")

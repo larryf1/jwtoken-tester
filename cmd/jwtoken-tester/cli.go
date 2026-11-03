@@ -39,25 +39,25 @@ func runDecodeCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	fs := flag.NewFlagSet("decode", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: jwtoken-tester decode [token]")
+		_, _ = fmt.Fprintln(stderr, "usage: jwtoken-tester decode [token]")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(stderr, "decode: at most one token argument is accepted")
+		_, _ = fmt.Fprintln(stderr, "decode: at most one token argument is accepted")
 		return 1
 	}
 
 	token, err := tokenFromArgsOrStdin(fs.Args(), stdin)
 	if err != nil {
-		fmt.Fprintf(stderr, "decode: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "decode: %v\n", err)
 		return 1
 	}
 
 	header, claims, err := decodeCompactJWS(token)
 	if err != nil {
-		fmt.Fprintf(stderr, "decode: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "decode: %v\n", err)
 		return 1
 	}
 
@@ -70,7 +70,7 @@ func runDecodeCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
-		fmt.Fprintf(stderr, "decode: writing output: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "decode: writing output: %v\n", err)
 		return 1
 	}
 	return 0
@@ -159,33 +159,33 @@ func runVerifyCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	fs.DurationVar(&cfg.Leeway, "leeway", 0, "clock skew allowance for exp/nbf/iat")
 	fs.BoolVar(&cfg.JSON, "json", false, "print the verdict envelope as JSON")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: jwtoken-tester verify (--jwks <url|file> | --issuer <url>) [--aud <aud>] [--alg <alg>]... [--leeway <duration>] [--json] [token]")
+		_, _ = fmt.Fprintln(stderr, "usage: jwtoken-tester verify (--jwks <url|file> | --issuer <url>) [--aud <aud>] [--alg <alg>]... [--leeway <duration>] [--json] [token]")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	if (cfg.JWKS == "") == (cfg.Issuer == "") {
-		fmt.Fprintln(stderr, "verify: exactly one of --jwks or --issuer is required")
+		_, _ = fmt.Fprintln(stderr, "verify: exactly one of --jwks or --issuer is required")
 		fs.Usage()
 		return 2
 	}
 
 	algs, err := normalizeAlgorithms(cfg.Algs)
 	if err != nil {
-		fmt.Fprintf(stderr, "verify: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "verify: %v\n", err)
 		return 2
 	}
 
 	token, err := tokenFromArgsOrStdin(fs.Args(), stdin)
 	if err != nil {
-		fmt.Fprintf(stderr, "verify: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "verify: %v\n", err)
 		return 2
 	}
 
 	keys, expectedIssuer, err := loadKeySource(cfg.JWKS, cfg.Issuer)
 	if err != nil {
-		fmt.Fprintf(stderr, "verify: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "verify: %v\n", err)
 		return 2
 	}
 
@@ -204,7 +204,7 @@ func runVerifyCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		Now:            time.Now().UTC(),
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "verify: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "verify: %v\n", err)
 		return 2
 	}
 
@@ -213,7 +213,7 @@ func runVerifyCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(verdict); err != nil {
-			fmt.Fprintf(stderr, "verify: writing output: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "verify: writing output: %v\n", err)
 			return 2
 		}
 	} else {
@@ -222,7 +222,7 @@ func runVerifyCommand(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 
 	if !verdict.Valid {
 		if verdict.Reason == verify.ReasonKid && verdict.KidStatus == verify.KeyStatusUnknown {
-			fmt.Fprintln(stderr, "hint: the token's kid was not found in the key source. Tokens minted by `jwtoken-tester print-token` use a throwaway in-memory keyring and cannot verify against a running server; restarting `serve` also discards its keys.")
+			_, _ = fmt.Fprintln(stderr, "hint: the token's kid was not found in the key source. Tokens minted by `jwtoken-tester print-token` use a throwaway in-memory keyring and cannot verify against a running server; restarting `serve` also discards its keys.")
 		}
 		return 1
 	}
@@ -254,7 +254,7 @@ func normalizeAlgorithms(values []string) ([]string, error) {
 
 func printVerdict(w io.Writer, verdict verify.Verdict) {
 	if verdict.Valid {
-		fmt.Fprint(w, "valid: token verified")
+		_, _ = fmt.Fprint(w, "valid: token verified")
 		var details []string
 		if verdict.Alg != "" {
 			details = append(details, "alg="+verdict.Alg)
@@ -263,17 +263,17 @@ func printVerdict(w io.Writer, verdict verify.Verdict) {
 			details = append(details, "kid="+verdict.Kid)
 		}
 		if len(details) > 0 {
-			fmt.Fprintf(w, " (%s)", strings.Join(details, " "))
+			_, _ = fmt.Fprintf(w, " (%s)", strings.Join(details, " "))
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 		return
 	}
 
-	fmt.Fprintf(w, "invalid: %s", verdict.Reason)
+	_, _ = fmt.Fprintf(w, "invalid: %s", verdict.Reason)
 	if verdict.Error != "" {
-		fmt.Fprintf(w, ": %s", verdict.Error)
+		_, _ = fmt.Fprintf(w, ": %s", verdict.Error)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }
 
 func loadKeySource(jwksValue, issuerValue string) (*jwksKeySource, string, error) {

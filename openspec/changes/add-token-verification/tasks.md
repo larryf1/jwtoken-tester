@@ -26,24 +26,24 @@
 
 ## 4. decode command
 
-- [ ] 4.1 Add `decode` to dispatch and usage text; verify `help` lists it and an unknown command still exits non-zero
-- [ ] 4.2 Implement argument and stdin decoding with JSON output; verify tests for valid, expired, foreign, malformed, and piped input
-- [ ] 4.3 Document `decode` in the README CLI section; verify the documented commands produce the described output
+- [x] 4.1 Add `decode` to dispatch and usage text; verify `help` lists it and an unknown command still exits non-zero
+- [x] 4.2 Implement argument and stdin decoding with JSON output; verify tests for valid, expired, foreign, malformed, and piped input
+- [x] 4.3 Document `decode` in the README CLI section; verify the documented commands produce the described output
 
 ## 5. verify command
 
-- [ ] 5.1 Implement JWKS loading from a URL or file with timeout, size, and redirect caps, converting JWKs to public keys; verify tests with a temp file and an `httptest` server, including the size cap and an unreachable URL
-- [ ] 5.2 Implement `--issuer` discovery, using `jwks_uri` for keys and the discovery `issuer` for the expected claim; verify tests for success, a missing `jwks_uri`, and an issuer mismatch
-- [ ] 5.3 Wire `--aud`, repeatable `--alg`, `--leeway`, `--json`, stdin, and usage errors; verify exit codes `0`, `1`, and `2` and that `--json` matches the HTTP verdict shape
-- [ ] 5.4 Add the `kid`/`unknown` hint mentioning `print-token` and server restarts; verify a test asserts the hint appears for that case
-- [ ] 5.5 Document `verify` in the README, including flags-before-token ordering and the `print-token` keyring caveat; verify the examples run as written against `serve`
+- [x] 5.1 Implement JWKS loading from a URL or file with timeout, size, and redirect caps, converting JWKs to public keys; verify tests with a temp file and an `httptest` server, including the size cap and an unreachable URL
+- [x] 5.2 Implement `--issuer` discovery, using `jwks_uri` for keys and the discovery `issuer` for the expected claim; verify tests for success, a missing `jwks_uri`, and an issuer mismatch
+- [x] 5.3 Wire `--aud`, repeatable `--alg`, `--leeway`, `--json`, stdin, and usage errors; verify exit codes `0`, `1`, and `2` and that `--json` matches the HTTP verdict shape
+- [x] 5.4 Add the `kid`/`unknown` hint mentioning `print-token` and server restarts; verify a test asserts the hint appears for that case
+- [x] 5.5 Document `verify` in the README, including flags-before-token ordering and the `print-token` keyring caveat; verify the examples run as written against `serve`
 
 ## 6. Integration verification
 
-- [ ] 6.1 Run `go test ./...` and `go vet ./...`; verify both pass
-- [ ] 6.2 Run `go test -race ./internal/verify ./internal/server ./internal/keyring`; verify no races are reported
-- [ ] 6.3 End-to-end check: start `serve`, mint one token per enabled algorithm, verify each with `POST /verify`, `decode`, and `verify --issuer`; verify all agree and exit codes match the documented contract
-- [ ] 6.4 Update the `FUTURE.md` priority snapshot and decision log for this item; verify the entry matches the README and the release-generated changelog conventions
+- [x] 6.1 Run `go test ./...` and `go vet ./...`; verify both pass
+- [x] 6.2 Run `go test -race ./internal/verify ./internal/server ./internal/keyring`; verify no races are reported
+- [x] 6.3 End-to-end check: start `serve`, mint one token per enabled algorithm, verify each with `POST /verify`, `decode`, and `verify --issuer`; verify all agree and exit codes match the documented contract
+- [x] 6.4 Update the `FUTURE.md` priority snapshot and decision log for this item; verify the entry matches the README and the release-generated changelog conventions
 
 ## Workflow follow-up
 

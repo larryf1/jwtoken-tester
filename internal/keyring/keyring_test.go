@@ -19,6 +19,25 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
+// lockedBuffer is a concurrency-safe log sink. Rotation logs are written from a
+// background goroutine while tests inspect the captured output.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func newTestRing(t *testing.T, grace time.Duration, algs ...Algorithm) *KeyRing {
 	t.Helper()
 	if len(algs) == 0 {
@@ -328,7 +347,7 @@ func TestStartRotationDisabledWhenIntervalZero(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := r.StartRotation(ctx, 0, logger)
 	select {
@@ -347,7 +366,7 @@ func TestStartRotationCancellationClosesDone(t *testing.T) {
 	r := newTestRing(t, time.Hour, AlgRS256)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := r.StartRotation(ctx, 10*time.Millisecond, logger)
 	cancel()
@@ -364,7 +383,7 @@ func TestStartRotationRotatesAndPrunes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	r.StartRotation(ctx, 10*time.Millisecond, logger)
 
@@ -523,7 +542,7 @@ func TestStartRotationErrorPaths(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	r := &failingKeyRing{err: errors.New("rotate failed")}
@@ -542,7 +561,7 @@ func TestStartRotationActiveKidErrorPath(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	r := &failingActiveKidKeyRing{}
@@ -747,7 +766,7 @@ func TestStartRotationDisabledWhenIntervalNegative(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	done := r.StartRotation(ctx, -time.Hour, logger)
 	select {

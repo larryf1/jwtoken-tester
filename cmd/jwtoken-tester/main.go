@@ -82,7 +82,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, logger *slog.
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, `jwtoken-tester - ephemeral JWT/JWKS test issuer
+	_, _ = fmt.Fprintln(w, `jwtoken-tester - ephemeral JWT/JWKS test issuer
 
 Usage:
   jwtoken-tester <command> [flags]
