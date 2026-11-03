@@ -43,6 +43,11 @@ func NewFactory(ring keyring.Ring, issuer string, defaultTTL, maxTTL time.Durati
 	return &Factory{ring: ring, issuer: issuer, defaultTTL: defaultTTL, maxTTL: maxTTL}
 }
 
+// MaxTTL reports the configured lifetime cap. Zero means no cap.
+func (f *Factory) MaxTTL() time.Duration {
+	return f.maxTTL
+}
+
 func (f *Factory) Mint(req *Request) (*Response, error) {
 	if req == nil {
 		req = &Request{}

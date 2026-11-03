@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -38,6 +39,10 @@ type Server struct {
 	lastSeen       map[string]time.Time
 	mu             sync.Mutex
 
+	audience       string
+	scopes         []string
+	discoveryExtra map[string]any
+
 	logger        *slog.Logger
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
@@ -53,6 +58,38 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(s *Server) {
 		if logger != nil {
 			s.logger = logger
+		}
+	}
+}
+
+// WithAudience sets the aud claim placed on tokens minted by /oauth/token. An
+// empty value omits the claim, which is the default.
+func WithAudience(audience string) Option {
+	return func(s *Server) {
+		s.audience = audience
+	}
+}
+
+// WithScopes sets the scope names advertised as scopes_supported in discovery.
+// It does not restrict scopes requested from /oauth/token.
+func WithScopes(scopes []string) Option {
+	return func(s *Server) {
+		s.scopes = append([]string(nil), scopes...)
+	}
+}
+
+// WithDiscoveryExtra merges extra metadata into both discovery documents.
+// Derived core fields (issuer, jwks_uri, token_endpoint, introspection_endpoint)
+// always win over the supplied values.
+func WithDiscoveryExtra(extra map[string]any) Option {
+	return func(s *Server) {
+		if extra == nil {
+			s.discoveryExtra = nil
+			return
+		}
+		s.discoveryExtra = make(map[string]any, len(extra))
+		for key, value := range extra {
+			s.discoveryExtra[key] = value
 		}
 	}
 }
@@ -141,7 +178,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
 	mux.HandleFunc("GET /.well-known/jwks.json/", s.handleJWKByKID)
 	mux.HandleFunc("GET /.well-known/openid-configuration", s.handleDiscovery)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleAuthorizationServerMetadata)
 	mux.HandleFunc("POST /token", s.handleToken)
+	mux.HandleFunc("POST /oauth/token", s.handleOAuthClientCredentialsToken)
+	mux.HandleFunc("POST /introspect", s.handleIntrospect)
 	mux.HandleFunc("POST /v2/oauth/token", s.handleOAuthToken)
 	mux.HandleFunc("POST /verify", s.handleVerify)
 
@@ -216,10 +256,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"warning": "integration-test token issuer; ephemeral in-memory keys",
 		"endpoints": []string{
 			"GET /healthz",
+			"GET /version",
 			"GET /.well-known/jwks.json",
 			"GET /.well-known/jwks.json/{kid}",
 			"GET /.well-known/openid-configuration",
+			"GET /.well-known/oauth-authorization-server",
 			"POST /token",
+			"POST /oauth/token",
+			"POST /introspect",
 			"POST /v2/oauth/token",
 			"POST /verify",
 		},
@@ -296,25 +340,50 @@ func (s *Server) handleJWKByKID(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+// discoveryDocument builds the single metadata document served at both the
+// OIDC and RFC 8414 well-known paths. Extra metadata is applied first so the
+// derived core endpoints cannot be overridden.
+func (s *Server) discoveryDocument() map[string]any {
 	base := strings.TrimSuffix(s.Issuer, "/")
 	algorithms := s.ring.EnabledAlgorithms()
 	algStrs := make([]string, len(algorithms))
 	for i, alg := range algorithms {
 		algStrs[i] = string(alg)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"issuer":                                s.Issuer,
-		"jwks_uri":                              base + "/.well-known/jwks.json",
-		"token_endpoint":                        base + "/v2/oauth/token",
-		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": algStrs,
-		"response_types_supported":              []string{"token"},
-		"claims_supported": []string{
-			"iss", "sub", "aud", "exp", "nbf", "iat", "jti",
-			"capabilities", "idtyp", "allowedResources", "version", "client_id",
-		},
-	})
+
+	doc := make(map[string]any, len(s.discoveryExtra)+12)
+	for key, value := range s.discoveryExtra {
+		doc[key] = value
+	}
+
+	doc["subject_types_supported"] = []string{"public"}
+	doc["id_token_signing_alg_values_supported"] = algStrs
+	doc["response_types_supported"] = []string{"token"}
+	doc["grant_types_supported"] = []string{"client_credentials"}
+	doc["token_endpoint_auth_methods_supported"] = []string{
+		"client_secret_basic", "client_secret_post", "none",
+	}
+	doc["claims_supported"] = []string{
+		"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "scope", "client_id",
+	}
+	if len(s.scopes) > 0 {
+		doc["scopes_supported"] = append([]string(nil), s.scopes...)
+	}
+
+	// Derived core fields are written last so extras cannot replace them.
+	doc["issuer"] = s.Issuer
+	doc["jwks_uri"] = base + "/.well-known/jwks.json"
+	doc["token_endpoint"] = base + "/oauth/token"
+	doc["introspection_endpoint"] = base + "/introspect"
+	return doc
+}
+
+func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.discoveryDocument())
+}
+
+func (s *Server) handleAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.discoveryDocument())
 }
 
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
@@ -470,6 +539,246 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, verdict)
 }
 
+const oauthFormContentType = "application/x-www-form-urlencoded"
+
+func setNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+
+func writeOAuthError(w http.ResponseWriter, status int, code, description string) {
+	writeJSON(w, status, map[string]string{
+		"error":             code,
+		"error_description": description,
+	})
+}
+
+func parseOAuthForm(w http.ResponseWriter, r *http.Request) error {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != oauthFormContentType {
+		return errors.New("request body must be application/x-www-form-urlencoded")
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	return r.ParseForm()
+}
+
+func oauthClientID(r *http.Request) string {
+	if username, _, ok := r.BasicAuth(); ok {
+		if clientID := strings.TrimSpace(username); clientID != "" {
+			return clientID
+		}
+	}
+	return strings.TrimSpace(r.PostForm.Get("client_id"))
+}
+
+func normalizeScope(raw string) string {
+	return strings.Join(strings.Fields(raw), " ")
+}
+
+// selectAlgorithm validates an explicit algorithm or falls back to RS256 when
+// enabled, then to the first enabled algorithm.
+func (s *Server) selectAlgorithm(raw string) (keyring.Algorithm, error) {
+	enabled := s.ring.EnabledAlgorithms()
+	if alg := strings.TrimSpace(raw); alg != "" {
+		candidate := keyring.Algorithm(alg)
+		if !slices.Contains(enabled, candidate) {
+			return "", fmt.Errorf("algorithm %q is not enabled", alg)
+		}
+		return candidate, nil
+	}
+	if slices.Contains(enabled, keyring.AlgRS256) {
+		return keyring.AlgRS256, nil
+	}
+	if len(enabled) > 0 {
+		return enabled[0], nil
+	}
+	return keyring.AlgRS256, nil
+}
+
+// selectTTL parses an optional non-negative Go duration and enforces MAX_TTL.
+// The boolean reports whether the caller supplied a value.
+func (s *Server) selectTTL(raw string) (time.Duration, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false, nil
+	}
+	ttl, err := time.ParseDuration(raw)
+	if err != nil || ttl < 0 {
+		return 0, false, errors.New("ttl must be a non-negative Go duration")
+	}
+	if maxTTL := s.Factory.MaxTTL(); maxTTL > 0 && ttl > maxTTL {
+		return 0, false, fmt.Errorf("ttl exceeds maximum allowed lifetime %s", maxTTL)
+	}
+	return ttl, true, nil
+}
+
+func oauthErrorCode(err error) string {
+	switch {
+	case errors.Is(err, keyring.ErrNoActiveKey):
+		return "temporarily_unavailable"
+	case errors.Is(err, tokenfactory.ErrInvalidRequest),
+		errors.Is(err, tokenfactory.ErrUnsupportedAlg),
+		errors.Is(err, tokenfactory.ErrTTLTooLong):
+		return "invalid_request"
+	default:
+		return "server_error"
+	}
+}
+
+func (s *Server) logOAuthMintFailure(r *http.Request, code string, attrs map[string]any) {
+	if attrs == nil {
+		attrs = map[string]any{}
+	}
+	attrs["error"] = code
+	s.logTokenEvent(r, "oauth_token_mint_failed", attrs)
+}
+
+func (s *Server) handleOAuthClientCredentialsToken(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+
+	if err := parseOAuthForm(w, r); err != nil {
+		s.logOAuthMintFailure(r, "invalid_request", nil)
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "request body must be application/x-www-form-urlencoded")
+		return
+	}
+
+	grantType := strings.TrimSpace(r.PostForm.Get("grant_type"))
+	if grantType == "" {
+		s.logOAuthMintFailure(r, "invalid_request", nil)
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "grant_type is required")
+		return
+	}
+	if grantType != "client_credentials" {
+		s.logOAuthMintFailure(r, "unsupported_grant_type", map[string]any{"grant_type": grantType})
+		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "only client_credentials is supported")
+		return
+	}
+
+	clientID := oauthClientID(r)
+	if clientID == "" {
+		s.logOAuthMintFailure(r, "invalid_request", nil)
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "client_id is required")
+		return
+	}
+
+	scope := normalizeScope(r.PostForm.Get("scope"))
+	alg, err := s.selectAlgorithm(r.PostForm.Get("alg"))
+	if err != nil {
+		s.logOAuthMintFailure(r, "invalid_request", map[string]any{"alg": r.PostForm.Get("alg")})
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	ttl, ttlSet, err := s.selectTTL(r.PostForm.Get("ttl"))
+	if err != nil {
+		s.logOAuthMintFailure(r, "invalid_request", map[string]any{"ttl": r.PostForm.Get("ttl")})
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	jti, err := generateJTI()
+	if err != nil {
+		s.logOAuthMintFailure(r, "server_error", nil)
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "could not generate token ID")
+		return
+	}
+
+	claims := map[string]any{
+		"sub":       clientID,
+		"client_id": clientID,
+		"jti":       jti,
+	}
+	if scope != "" {
+		claims["scope"] = scope
+	}
+	if s.audience != "" {
+		claims["aud"] = s.audience
+	}
+	if ttlSet {
+		claims["exp"] = ttl.String()
+	}
+
+	resp, err := s.Factory.Mint(&tokenfactory.Request{Claims: claims, Alg: string(alg)})
+	if err != nil {
+		s.logOAuthMintFailure(r, oauthErrorCode(err), map[string]any{
+			"alg":   string(alg),
+			"scope": scope,
+		})
+		switch {
+		case errors.Is(err, tokenfactory.ErrInvalidRequest),
+			errors.Is(err, tokenfactory.ErrUnsupportedAlg),
+			errors.Is(err, tokenfactory.ErrTTLTooLong):
+			writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		case errors.Is(err, keyring.ErrNoActiveKey):
+			writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "no active signing key")
+		default:
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "token minting failed")
+		}
+		return
+	}
+
+	response := map[string]any{
+		"access_token": resp.AccessToken,
+		"token_type":   resp.TokenType,
+		"expires_in":   resp.ExpiresIn,
+	}
+	if scope != "" {
+		response["scope"] = scope
+	}
+	s.logTokenEvent(r, "oauth_token_minted", map[string]any{
+		"alg":        string(alg),
+		"scope":      scope,
+		"expires_in": resp.ExpiresIn,
+	})
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w)
+
+	if err := parseOAuthForm(w, r); err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "request body must be application/x-www-form-urlencoded")
+		return
+	}
+
+	tokenValue := strings.TrimSpace(r.PostForm.Get("token"))
+	if tokenValue == "" {
+		s.logTokenEvent(r, "token_introspected", map[string]any{"active": false, "reason": "missing_token"})
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "token is required")
+		return
+	}
+
+	verdict, err := verify.Verify(verify.Input{
+		Token:          tokenValue,
+		Keys:           verify.RingKeySource{Ring: s.ring},
+		ExpectedIssuer: s.Issuer,
+		Now:            time.Now().UTC(),
+	})
+	if err != nil {
+		s.logTokenEvent(r, "token_introspected", map[string]any{"active": false, "reason": "error"})
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "verification failed")
+		return
+	}
+
+	attrs := map[string]any{"active": verdict.Valid}
+	if !verdict.Valid {
+		attrs["reason"] = string(verdict.Reason)
+	}
+	s.logTokenEvent(r, "token_introspected", attrs)
+
+	if !verdict.Valid {
+		writeJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+
+	response := make(map[string]any, len(verdict.Claims)+2)
+	for key, value := range verdict.Claims {
+		response[key] = value
+	}
+	response["active"] = true
+	response["token_type"] = "Bearer"
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	clientID := strings.TrimSpace(r.Header.Get("X-Client-Id"))
 	if clientID == "" {
@@ -480,6 +789,17 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	capabilities := oauthCapabilities(r)
 	if len(capabilities) == 0 {
 		writeError(w, http.StatusBadRequest, "Scope is required")
+		return
+	}
+
+	alg, err := s.selectAlgorithm(r.URL.Query().Get("alg"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ttl, ttlSet, err := s.selectTTL(r.URL.Query().Get("ttl"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -501,7 +821,10 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		"jti":       jti,
 		"client_id": clientID,
 	}
-	resp, err := s.Factory.Mint(&tokenfactory.Request{Claims: claims})
+	if ttlSet {
+		claims["exp"] = ttl.String()
+	}
+	resp, err := s.Factory.Mint(&tokenfactory.Request{Claims: claims, Alg: string(alg)})
 	if err != nil {
 		s.logTokenEvent(r, "token_mint_failed", map[string]any{"error": err.Error()})
 		switch {
@@ -517,10 +840,13 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	signer, _ := s.ring.Signer(keyring.AlgRS256)
+	kid := ""
+	if signer, signerErr := s.ring.Signer(alg); signerErr == nil && signer != nil {
+		kid = signer.Kid()
+	}
 	s.logTokenEvent(r, "token_minted", map[string]any{
-		"alg":        string(keyring.AlgRS256),
-		"kid":        signer.Kid(),
+		"alg":        string(alg),
+		"kid":        kid,
 		"expires_in": resp.ExpiresIn,
 	})
 	writeJSON(w, http.StatusOK, resp)

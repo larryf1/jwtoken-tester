@@ -24,11 +24,13 @@ tags:
   - name: Keys
     description: JWKS and key management endpoints
   - name: Tokens
-    description: Token minting endpoint
+    description: Token minting endpoints
+  - name: Introspection
+    description: RFC 7662 token introspection
   - name: Verification
     description: Self-check token verification
   - name: Discovery
-    description: OpenID Connect discovery
+    description: OpenID Connect and OAuth authorization server metadata
 
 paths:
   /:
@@ -137,12 +139,35 @@ paths:
       tags: [Discovery]
       summary: OpenID Connect Discovery Document
       description: |
-        OIDC-style discovery document advertising `issuer`, `jwks_uri`, `token_endpoint`,
-        and `id_token_signing_alg_values_supported` listing all enabled algorithms.
+        Shared metadata document advertising `issuer`, derived `jwks_uri`,
+        `token_endpoint` (`<issuer>/oauth/token`), `introspection_endpoint`,
+        `grant_types_supported`, `token_endpoint_auth_methods_supported`,
+        `scopes_supported` when configured, and `id_token_signing_alg_values_supported`
+        listing all enabled algorithms.
+
+        The document deliberately omits `authorization_endpoint`,
+        `code_challenge_methods_supported`, and `userinfo_endpoint`.
       operationId: getDiscovery
       responses:
         "200":
           description: Discovery document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryResponse'
+
+  /.well-known/oauth-authorization-server:
+    get:
+      tags: [Discovery]
+      summary: OAuth 2.0 Authorization Server Metadata (RFC 8414)
+      description: |
+        Serves the same metadata document as `/.well-known/openid-configuration`.
+        Derived core fields (`issuer`, `jwks_uri`, `token_endpoint`,
+        `introspection_endpoint`) cannot be overridden by `DISCOVERY_EXTRA_JSON`.
+      operationId: getAuthorizationServerMetadata
+      responses:
+        "200":
+          description: Authorization server metadata
           content:
             application/json:
               schema:
@@ -207,6 +232,147 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /oauth/token:
+    post:
+      tags: [Tokens]
+      summary: Mint a token with OAuth 2.0 client credentials
+      description: |
+        RFC 6749 client-credentials token endpoint for generic OAuth clients.
+        The request body must be `application/x-www-form-urlencoded`.
+
+        **Authentication** is permissive: a client identifier is required, but
+        `client_secret` is never validated. The identifier may be supplied with
+        HTTP Basic, in the form body, or alone as `client_id`.
+
+        **Claims:** `iss`, `sub` and `client_id` from the client identifier,
+        `iat`, `nbf`, `exp`, `jti`, a space-normalized `scope` when requested,
+        and `aud` only when `AUDIENCE` is configured. The legacy
+        `capabilities`, `idtyp`, `allowedResources`, and `version` claims are
+        absent.
+
+        `SCOPES` only advertises scopes in discovery; it does not restrict what
+        a client may request.
+      operationId: mintOAuthClientCredentialsToken
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+      responses:
+        "200":
+          description: Token minted successfully
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+              description: Token responses are never cacheable
+            Pragma:
+              schema:
+                type: string
+                enum: [no-cache]
+              description: HTTP/1.0 cache compatibility
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthTokenResponse'
+        "400":
+          description: Invalid request, unsupported grant type, disabled algorithm, invalid TTL, or oversized body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal token-minting failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        "503":
+          description: No active signing key available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+
+  /introspect:
+    post:
+      tags: [Introspection]
+      summary: Introspect a token (RFC 7662)
+      description: |
+        Verifies the supplied token against this server's live keyring and
+        configured issuer. The request body must be
+        `application/x-www-form-urlencoded`; `token_type_hint` is accepted and
+        ignored.
+
+        Authentication is permissive and no client identifier is required.
+        Active tokens echo every token claim plus authoritative `active: true`
+        and `token_type: "Bearer"`. Expired, not-yet-valid, wrong-issuer,
+        unknown-key, bad-signature, and malformed tokens return `200` with
+        exactly `{"active": false}` and no claim fields.
+      operationId: introspectToken
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/IntrospectionRequest'
+      responses:
+        "200":
+          description: Introspection result; inspect `active`
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+              description: Introspection responses are never cacheable
+            Pragma:
+              schema:
+                type: string
+                enum: [no-cache]
+              description: HTTP/1.0 cache compatibility
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntrospectionResponse'
+        "400":
+          description: Invalid request (missing token, non-form body, oversized body)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        "405":
+          description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        "429":
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Verification failed unexpectedly
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
 
   /verify:
     post:
@@ -275,14 +441,22 @@ paths:
   /v2/oauth/token:
     post:
       tags: [Tokens]
-      summary: Mint a v2 OAuth-style JWT
+      summary: Mint a legacy v2 OAuth-style JWT
       description: |
+        Legacy bespoke endpoint retained for compatibility. Discovery advertises
+        `/oauth/token` instead; use this route only when the v2 claim profile is
+        required.
+
         Mints a signed v2 token using `X-Client-Id` and the comma-separated `Scope` query
         parameter. Requested scopes are copied into the token's `capabilities` claim.
         The JWT also includes `sub`, `aud`, `idtyp`, `allowedResources`, `version`,
         `client_id`, and the standard `iss`, `iat`, `nbf`, `exp`, and `jti` claims.
         This test issuer does not validate `X-Client-Secret`; `allowedPartners` is the
         fixed example value `partner`.
+
+        Optional `alg` and `ttl` query parameters select the signing algorithm and
+        lifetime. When omitted, `alg` falls back to RS256 when enabled, then to the
+        first enabled algorithm.
       operationId: mintOAuthV2Token
       parameters:
         - name: Scope
@@ -292,6 +466,21 @@ paths:
           schema:
             type: string
           example: capability1,capability2
+        - name: alg
+          in: query
+          required: false
+          description: Enabled signing algorithm; defaults to RS256 when enabled, else the first enabled algorithm.
+          schema:
+            type: string
+            enum: [RS256, ES256, EdDSA]
+          example: ES256
+        - name: ttl
+          in: query
+          required: false
+          description: Non-negative Go duration capped by `MAX_TTL`.
+          schema:
+            type: string
+          example: 5m
         - name: X-Client-Id
           in: header
           required: true
@@ -356,10 +545,14 @@ components:
             type: string
           example:
             - "GET /healthz"
+            - "GET /version"
             - "GET /.well-known/jwks.json"
             - "GET /.well-known/jwks.json/{kid}"
             - "GET /.well-known/openid-configuration"
+            - "GET /.well-known/oauth-authorization-server"
             - "POST /token"
+            - "POST /oauth/token"
+            - "POST /introspect"
             - "POST /v2/oauth/token"
             - "POST /verify"
 
@@ -442,6 +635,10 @@ components:
 
     DiscoveryResponse:
       type: object
+      additionalProperties: true
+      description: |
+        Shared metadata document. Additional members may be merged with
+        `DISCOVERY_EXTRA_JSON`; the derived core fields cannot be overridden.
       properties:
         issuer:
           type: string
@@ -454,7 +651,13 @@ components:
         token_endpoint:
           type: string
           format: uri
-          example: "http://127.0.0.1:8080/token"
+          description: Always `<issuer>/oauth/token`.
+          example: "http://127.0.0.1:8080/oauth/token"
+        introspection_endpoint:
+          type: string
+          format: uri
+          description: Always `<issuer>/introspect`.
+          example: "http://127.0.0.1:8080/introspect"
         subject_types_supported:
           type: array
           items:
@@ -466,6 +669,17 @@ components:
             type: string
             enum: [RS256, ES256, EdDSA]
           example: ["RS256", "ES256", "EdDSA"]
+        grant_types_supported:
+          type: array
+          items:
+            type: string
+          example: ["client_credentials"]
+        token_endpoint_auth_methods_supported:
+          type: array
+          items:
+            type: string
+            enum: [client_secret_basic, client_secret_post, none]
+          example: ["client_secret_basic", "client_secret_post", "none"]
         response_types_supported:
           type: array
           items:
@@ -475,7 +689,13 @@ components:
           type: array
           items:
             type: string
-          example: ["iss", "sub", "aud", "exp", "nbf", "iat", "jti"]
+          example: ["iss", "sub", "aud", "exp", "nbf", "iat", "jti", "scope", "client_id"]
+        scopes_supported:
+          type: array
+          description: Present only when `SCOPES` is configured.
+          items:
+            type: string
+          example: ["read", "write"]
 
     TokenRequest:
       type: object
@@ -516,6 +736,108 @@ components:
           type: integer
           description: Token lifetime in seconds
           example: 3600
+
+    OAuthTokenRequest:
+      type: object
+      required: [grant_type]
+      properties:
+        grant_type:
+          type: string
+          enum: [client_credentials]
+          description: Only `client_credentials` is supported.
+          example: client_credentials
+        client_id:
+          type: string
+          description: |
+            Client identifier used for `sub` and `client_id`. Required unless
+            supplied with HTTP Basic authentication.
+          example: test-client
+        client_secret:
+          type: string
+          description: Accepted for compatibility but never validated by this test issuer.
+          example: ignored
+        scope:
+          type: string
+          description: Space-delimited scopes; whitespace is normalized and echoed back.
+          example: read write
+        alg:
+          type: string
+          enum: [RS256, ES256, EdDSA]
+          description: Enabled signing algorithm; defaults to RS256 when enabled, else the first enabled algorithm.
+          example: ES256
+        ttl:
+          type: string
+          description: Non-negative Go duration capped by `MAX_TTL`.
+          example: 5m
+
+    OAuthTokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: JWT in JWS Compact Serialization
+          example: "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9..."
+        token_type:
+          type: string
+          enum: [Bearer]
+          example: Bearer
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds
+          example: 3600
+        scope:
+          type: string
+          description: Normalized scope, present only when requested.
+          example: read write
+
+    OAuthErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Standard OAuth error code.
+          example: invalid_request
+        error_description:
+          type: string
+          description: Human-readable error message.
+          example: grant_type is required
+
+    IntrospectionRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: JWT in JWS Compact Serialization
+          example: "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9..."
+        token_type_hint:
+          type: string
+          description: Accepted and ignored.
+          example: access_token
+
+    IntrospectionResponse:
+      type: object
+      required: [active]
+      additionalProperties: true
+      description: |
+        For an active token, every token claim is echoed alongside authoritative
+        `active` and `token_type`. For an inactive token, only `active: false`
+        is returned.
+      properties:
+        active:
+          type: boolean
+          example: true
+        token_type:
+          type: string
+          description: Present only for active tokens.
+          enum: [Bearer]
+          example: Bearer
+        scope:
+          type: string
+          description: Present only when the token carries a `scope` claim.
+          example: read write
 
     VerifyRequest:
       type: object

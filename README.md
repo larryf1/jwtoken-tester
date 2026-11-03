@@ -22,25 +22,28 @@ of hacking basic-auth shortcuts into your middleware.
 ## How it works
 
 ```
-┌──────────────────────────────────────────────┐
-│                jwtoken-tester                │
-│                                              │
-│  In-memory KeyRing                           │
-│   ├─ active key(s): RSA2048 / P-256 / Ed25519│
-│   ├─ retiring keys (grace window)            │
-│   └─ rotation goroutine                      │
-│                                              │
-│  HTTP API                                    │
-│   GET  /                                     │
-│   GET  /healthz                              │
-│   GET  /version                              │
-│   GET  /.well-known/jwks.json                │
-│   GET  /.well-known/jwks.json/{kid}          │
-│   GET  /.well-known/openid-configuration     │
-│   POST /token        ← mint arbitrary JWTs   │
-│   POST /v2/oauth/token ← mint v2-style JWTs  │
-│   POST /verify       ← self-check a token    │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                jwtoken-tester                    │
+│                                                  │
+│  In-memory KeyRing                               │
+│   ├─ active key(s): RSA2048 / P-256 / Ed25519    │
+│   ├─ retiring keys (grace window)                │
+│   └─ rotation goroutine                          │
+│                                                  │
+│  HTTP API                                        │
+│   GET  /                                         │
+│   GET  /healthz                                  │
+│   GET  /version                                  │
+│   GET  /.well-known/jwks.json                    │
+│   GET  /.well-known/jwks.json/{kid}              │
+│   GET  /.well-known/openid-configuration         │
+│   GET  /.well-known/oauth-authorization-server   │
+│   POST /token          ← mint arbitrary JWTs     │
+│   POST /oauth/token    ← OAuth client credentials│
+│   POST /introspect     ← RFC 7662 introspection  │
+│   POST /v2/oauth/token ← legacy v2-style JWTs    │
+│   POST /verify         ← self-check a token      │
+└──────────────────────────────────────────────────┘
 ```
 
 Tokens are standards-compliant JWS compact serializations (RS256, ES256, EdDSA), so real-world
@@ -311,6 +314,73 @@ Rules:
 Error responses are `{"error": "<message>"}` with status `400` (bad JSON, unsupported alg,
 lifetime cap exceeded), `405` (wrong method), or `503` (no active signing key).
 
+### `POST /oauth/token`
+
+Standards-shaped OAuth 2.0 client-credentials endpoint for generic OAuth clients. The request
+body must be `application/x-www-form-urlencoded`:
+
+```sh
+curl -s http://127.0.0.1:8080/oauth/token \
+  -d 'grant_type=client_credentials&client_id=test-client&scope=read write'
+```
+
+| Form field      | Required | Description                                                        |
+|-----------------|----------|--------------------------------------------------------------------|
+| `grant_type`    | yes      | Must be `client_credentials`; anything else is `unsupported_grant_type` |
+| `client_id`     | yes*     | Client identifier used for `sub` and `client_id`; also accepted via HTTP Basic |
+| `client_secret` | no       | Accepted but never validated (test issuer)                          |
+| `scope`         | no       | Space-delimited scopes; whitespace is normalized and echoed back    |
+| `alg`           | no       | Enabled algorithm; defaults to RS256 when enabled, else the first enabled |
+| `ttl`           | no       | Non-negative Go duration such as `5m`; capped by `MAX_TTL`          |
+
+\* The client identifier may come from HTTP Basic (`Authorization: Basic ...`) instead of the form
+body. A missing identifier returns `400 invalid_request`. Secrets are ignored.
+
+The minted token contains `iss`, `sub` and `client_id` set to the client identifier, `iat`, `nbf`,
+`exp`, `jti`, a normalized `scope` when requested, and `aud` only when `AUDIENCE` is configured. It
+does **not** carry the legacy `capabilities`, `idtyp`, `allowedResources`, or `version` claims.
+`SCOPES` only advertises supported scopes in discovery; it does not restrict what a client may
+request.
+
+Success responses use the standard envelope and include `scope` when one was requested:
+
+```json
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6Ii4uLiJ9...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scope": "read write"
+}
+```
+
+Token responses send `Cache-Control: no-store` and `Pragma: no-cache`. Errors use the standard OAuth
+shape `{"error": "<code>", "error_description": "<message>"}`: `400 invalid_request` or
+`unsupported_grant_type`, `405` for non-POST methods, `503 temporarily_unavailable` when no signing
+key is active, and `500 server_error` for internal failures. Request bodies larger than 1 MiB are
+rejected with `400 invalid_request`.
+
+### `POST /introspect`
+
+RFC 7662 token introspection over a form body. The endpoint verifies the token against this
+server's live keyring and configured issuer:
+
+```sh
+curl -s http://127.0.0.1:8080/introspect -d "token=$ACCESS_TOKEN"
+```
+
+| Form field        | Required | Description                                      |
+|-------------------|----------|--------------------------------------------------|
+| `token`           | yes      | JWT in JWS Compact Serialization                 |
+| `token_type_hint` | no       | Accepted and ignored                            |
+
+The endpoint uses the same permissive authentication as `/oauth/token`: it does not require a client
+identifier and ignores client secrets. An active token returns `200` with every claim from the token
+plus authoritative `active: true` and `token_type: "Bearer"`. Expired, not-yet-valid, wrong-issuer,
+unknown-key, bad-signature, and malformed tokens return `200` with exactly `{"active": false}` and no
+claim fields. A missing `token` returns `400 invalid_request`; non-POST methods return `405`, and
+bodies larger than 1 MiB are rejected. Responses send `Cache-Control: no-store` and
+`Pragma: no-cache`.
+
 ### `POST /verify`
 
 Self-check a token against the running issuer's own live keyring. This is deliberately **not** a
@@ -359,7 +429,9 @@ A `500` means verification failed outside the closed reason set; correct request
 
 ### `POST /v2/oauth/token`
 
-Mints a v2-style token from a client ID and comma-separated capability scope:
+Legacy bespoke endpoint retained for compatibility. Discovery no longer points here; it advertises
+`/oauth/token` instead. Mints a v2-style token from a client ID and comma-separated capability
+scope:
 
 ```sh
 curl --request POST \
@@ -374,6 +446,22 @@ The signed token includes `sub`, `client_id`, `aud: ["client"]`, `idtyp: "app"`,
 the requested `capabilities`, and standard `iss`, `iat`, `nbf`, `exp`, and unique `jti` claims.
 `allowedResources.allowedPartners` currently contains the example value `partner`.
 
+Optional query extensions select the signing algorithm and lifetime:
+
+| Query | Description                                                                 |
+|-------|-----------------------------------------------------------------------------|
+| `alg` | Enabled algorithm; defaults to RS256 when enabled, else the first enabled   |
+| `ttl` | Non-negative Go duration such as `5m`; capped by `MAX_TTL`                  |
+
+```sh
+curl --request POST \
+  --url 'http://127.0.0.1:8080/v2/oauth/token?Scope=read&alg=ES256&ttl=5m' \
+  --header 'X-Client-Id: client-id'
+```
+
+Invalid, negative, disabled, or over-cap values return `400` using this endpoint's legacy
+`{"error": "<message>"}` shape. The bespoke claims above are unchanged.
+
 This is test tooling, not client authentication: `X-Client-Secret` is accepted but not validated,
 requested capabilities are not checked against a registry, and partner policy is not configurable.
 Do not expose this endpoint as a production OAuth service.
@@ -384,10 +472,26 @@ Example — deliberately broken token for a rejection test:
 curl -s http://127.0.0.1:8080/token -d '{"claims":{"iss":"https://attacker.example","exp":"-5m"}}'
 ```
 
-### `GET /.well-known/openid-configuration`
+### `GET /.well-known/openid-configuration` and `GET /.well-known/oauth-authorization-server`
 
-OIDC-style discovery document advertising `issuer`, `jwks_uri`, `token_endpoint`, and
-`id_token_signing_alg_values_supported` listing all enabled algorithms.
+Both paths serve the same metadata document. It advertises:
+
+- `issuer`, `jwks_uri`, `token_endpoint` (`<issuer>/oauth/token`), and `introspection_endpoint`
+  (`<issuer>/introspect`), all derived from `ISSUER`
+- `grant_types_supported: ["client_credentials"]`
+- `token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"]`
+- `response_types_supported: ["token"]`, `subject_types_supported: ["public"]`, and
+  `id_token_signing_alg_values_supported` listing all enabled algorithms
+- `claims_supported` for the generic OAuth claim profile
+- `scopes_supported` only when `SCOPES` is set
+
+The document deliberately omits `authorization_endpoint`, `code_challenge_methods_supported`, and
+`userinfo_endpoint`, because this issuer does not implement those flows. `/v2/oauth/token` is not
+advertised; use it directly only for the legacy claim profile.
+
+`DISCOVERY_EXTRA_JSON` merges additional JSON-object members into both documents. The derived core
+fields `issuer`, `jwks_uri`, `token_endpoint`, and `introspection_endpoint` always win over supplied
+values. Invalid JSON or a non-object value fails startup.
 
 ### `GET /.well-known/jwks.json`
 
@@ -427,6 +531,9 @@ Every setting can be passed as an environment variable or the equivalent flag (f
 | `ALGORITHMS`         | `--algorithms`        | `RS256,ES256,EdDSA`     | comma-separated algorithms to enable   |
 | `RATE_LIMIT_RPS`     | `--rate-limit-rps`    | `100`                   | per-IP requests per second             |
 | `RATE_LIMIT_BURST`   | `--rate-limit-burst`  | `200`                   | per-IP burst allowance                 |
+| `AUDIENCE`           | `--audience`          | *(unset)*               | `aud` claim on `/oauth/token` tokens   |
+| `SCOPES`             | `--scopes`            | *(unset)*               | comma-separated scopes advertised in discovery |
+| `DISCOVERY_EXTRA_JSON` | `--discovery-extra-json` | *(unset)*         | JSON object merged into discovery metadata |
 
 Durations use Go syntax: `30s`, `45m`, `12h`. Keep `GRACE_PERIOD ≥ MAX_TTL` so tokens minted
 just before a rotation stay verifiable until they expire.
@@ -470,8 +577,9 @@ func TestProtectedEndpoint(t *testing.T) {
 ```
 
 Options mirror the server settings: `WithAlgorithms`, `WithIssuer`, `WithDefaultTTL`,
-`WithMaxTTL`, `WithRotationInterval`, `WithGracePeriod`, `WithRateLimit`, and
-`WithLogger`. An empty issuer selects the bound server URL. Enabled algorithms use
+`WithMaxTTL`, `WithRotationInterval`, `WithGracePeriod`, `WithRateLimit`, `WithLogger`,
+`WithAudience`, `WithScopes`, and `WithDiscoveryExtra`. An empty issuer selects the bound server URL.
+Enabled algorithms use
 `tester.RS256`, `tester.ES256`, and `tester.EdDSA`; `Mint` returns `ErrUnsupportedAlgorithm`,
 `ErrTTLTooLong`, or `ErrInvalidRequest` for rejected requests.
 
@@ -527,12 +635,13 @@ Shipped:
       deterministic keys, and a resource-only `Close`)
 - [x] Token verification and debugging: `POST /verify` self-check endpoint and `decode` /
       `verify` CLI commands
+- [x] Standards-compliant `POST /oauth/token` (client credentials), RFC 7662 `POST /introspect`,
+      richer shared discovery metadata, RFC 8414 metadata, and `alg`/`ttl` selection
 
 Candidate enhancements below are **not commitments**. See [`FUTURE.md`](FUTURE.md) for effort,
 value, design notes, and open questions.
 
-- [ ] Standards-compliant `POST /oauth/token` (client credentials), RFC 7662 `POST /introspect`,
-      plus richer discovery metadata, RFC 8414 metadata, and `/userinfo`
+- [ ] Authorization-code + PKCE flow, `id_token`/`/userinfo`, and claim/IdP profiles
 - [ ] More algorithms (PS256/PS384/PS512, RS384/RS512, ES384/ES512, optional HMAC) and
       negative-token controls (`alg: none`, malformed tokens, `kid`/`typ`/`x5c` overrides)
 - [ ] Claim profiles for common IdPs (Entra ID, Auth0, Keycloak, Okta, Cognito) and
