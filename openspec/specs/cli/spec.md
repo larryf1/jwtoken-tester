@@ -7,7 +7,7 @@ Defines the `jwtoken-tester` command-line entrypoint — its subcommands, usage 
 ## Requirements
 
 ### Requirement: Top-level command dispatch
-The binary SHALL accept `serve`, `print-token`, and `help` as commands. Running with no command SHALL print usage to stdout and exit non-zero; an unknown command SHALL report the command on stderr, print usage to stdout, and exit non-zero.
+The binary SHALL accept `serve`, `print-token`, `decode`, `verify`, `healthcheck`, and `help` as commands. Running with no command SHALL print usage to stdout and exit non-zero; an unknown command SHALL report the command on stderr, print usage to stdout, and exit non-zero.
 
 #### Scenario: No command prints usage and exits non-zero
 - **WHEN** the binary is run with no arguments
@@ -15,7 +15,7 @@ The binary SHALL accept `serve`, `print-token`, and `help` as commands. Running 
 
 #### Scenario: Unknown command rejected
 - **WHEN** the binary is run with an unrecognized command
-- **THEN** usage text is printed and the process exits non-zero
+- **THEN** the command is reported on stderr, usage is printed, and the process exits non-zero
 
 ### Requirement: serve runs the HTTP server with graceful shutdown
 The `serve` command SHALL start the issuer on the configured address, log a test-issuer warning, and on SIGINT or SIGTERM SHALL shut down the HTTP server gracefully and exit.
@@ -49,3 +49,76 @@ The `print-token` command SHALL mint a single token from its flags and print onl
 #### Scenario: Unparsable claims exit non-zero
 - **WHEN** `--claims` is not valid JSON
 - **THEN** an error is logged and the process exits non-zero
+
+### Requirement: healthcheck probes the local server
+The `healthcheck` command SHALL probe the `/healthz` endpoint using the binary itself. It SHALL derive the target URL from `LISTEN` unless `--url` is supplied, SHALL apply a configurable `--timeout`, and SHALL exit non-zero when the request fails or the response status is not `200`.
+
+#### Scenario: URL derived from LISTEN
+- **WHEN** `healthcheck` runs with `LISTEN=0.0.0.0:9090` and no `--url`
+- **THEN** it probes `http://127.0.0.1:9090/healthz`
+
+#### Scenario: Explicit URL used
+- **WHEN** `--url http://127.0.0.1:8080/healthz` is supplied
+- **THEN** that URL is probed instead of the derived one
+
+#### Scenario: Unhealthy response exits non-zero
+- **WHEN** the probe returns a status other than `200` or the connection fails
+- **THEN** the command reports the failure on stderr and exits non-zero
+
+### Requirement: decode prints a token without verification
+The `decode` command SHALL accept a token as a positional argument or read it from stdin, SHALL decode the JOSE header and payload without keys or network access, and SHALL print them as JSON. It SHALL succeed for any structurally decodable JWT and SHALL NOT validate the signature, time claims, issuer, or audience. A structurally invalid value SHALL produce an error and a non-zero exit.
+
+#### Scenario: Expired token decoded
+- **WHEN** `decode` receives a correctly formed but expired token
+- **THEN** it prints the header and claims and exits zero
+
+#### Scenario: Foreign token decoded
+- **WHEN** `decode` receives a token signed by an unknown issuer
+- **THEN** it prints the header and claims without contacting any key source
+
+#### Scenario: Malformed value rejected
+- **WHEN** the input is not a three-segment compact JWS
+- **THEN** the command reports an error and exits non-zero
+
+#### Scenario: Token read from stdin
+- **WHEN** no positional token is supplied and a token is piped to stdin
+- **THEN** the piped token is decoded
+
+### Requirement: verify checks a token against an external key source
+The `verify` command SHALL verify a token against keys obtained from `--jwks <url|file>` or discovered from `--issuer <url>`. It SHALL accept optional `--aud`, repeatable `--alg`, and `--leeway` constraints, SHALL read the token from a positional argument or stdin, and SHALL perform key retrieval in the client process rather than through the local server.
+
+#### Scenario: Token verified against a JWKS URL
+- **WHEN** `verify --jwks http://127.0.0.1:8080/.well-known/jwks.json <token>` is run for a token from that issuer
+- **THEN** the token is reported valid
+
+#### Scenario: Issuer discovery supplies keys and issuer check
+- **WHEN** `verify --issuer http://127.0.0.1:8080 <token>` is run
+- **THEN** the discovery document's `jwks_uri` supplies the keys
+- **AND** the token's `iss` is checked against the supplied issuer URL
+
+#### Scenario: Missing key source is a usage error
+- **WHEN** `verify` is run without `--jwks` or `--issuer`
+- **THEN** the command reports a usage error and exits non-zero
+
+#### Scenario: Invalid token reported
+- **WHEN** the token is well formed but fails signature, time, issuer, audience, or algorithm checks
+- **THEN** the command reports the failure reason and exits non-zero
+
+### Requirement: verify exposes machine-readable verdicts and exit codes
+`verify` SHALL print a human-readable verdict by default and SHALL print the verification verdict envelope as JSON when `--json` is supplied. It SHALL exit `0` for a valid token, `1` for an invalid token, and `2` for operational failures such as an unreadable key source, a failed fetch, or a usage error.
+
+#### Scenario: Valid token exits zero
+- **WHEN** verification succeeds
+- **THEN** the command exits `0`
+
+#### Scenario: Invalid token exits one
+- **WHEN** verification completes with `valid: false`
+- **THEN** the command exits `1`
+
+#### Scenario: Operational failure exits two
+- **WHEN** the key source cannot be read or fetched
+- **THEN** the command reports the operational error and exits `2`
+
+#### Scenario: JSON output
+- **WHEN** `--json` is supplied
+- **THEN** the output is the same verdict envelope the HTTP endpoint returns
