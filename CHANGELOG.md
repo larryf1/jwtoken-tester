@@ -1,3 +1,14 @@
+## v2.5.0 (2026-11-04)
+
+### Features
+
+* implement RFC 6749 client-credentials and RFC 7662 introspectio… (#23)
+* add token verification endpoint and CLI commands (#22)
+
+### Other Changes
+
+* **goreleaser:** update archive formats and rename version_template
+
 ## v2.4.0 (2026-11-01)
 
 ### Features
