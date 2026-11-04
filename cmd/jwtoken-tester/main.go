@@ -26,15 +26,18 @@ import (
 var Version string
 
 type serveConfig struct {
-	Listen         string
-	Issuer         string
-	DefaultTTL     time.Duration
-	MaxTTL         time.Duration
-	RotationPeriod time.Duration
-	GracePeriod    time.Duration
-	Algorithms     string
-	RateLimitRPS   float64
-	RateLimitBurst int
+	Listen             string
+	Issuer             string
+	DefaultTTL         time.Duration
+	MaxTTL             time.Duration
+	RotationPeriod     time.Duration
+	GracePeriod        time.Duration
+	Algorithms         string
+	RateLimitRPS       float64
+	RateLimitBurst     int
+	Audience           string
+	Scopes             string
+	DiscoveryExtraJSON string
 }
 
 type printTokenConfig struct {
@@ -106,35 +109,13 @@ Examples:
 }
 
 func runServe(logger *slog.Logger, args []string) {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-
-	cfg := serveConfig{
-		Listen:         envStr("LISTEN", "127.0.0.1:8080"),
-		Issuer:         envStr("ISSUER", "http://127.0.0.1:8080"),
-		DefaultTTL:     envDur("DEFAULT_TTL", time.Hour),
-		MaxTTL:         envDur("MAX_TTL", 24*time.Hour),
-		RotationPeriod: envDur("ROTATION_INTERVAL", 30*time.Minute),
-		GracePeriod:    envDur("GRACE_PERIOD", 25*time.Hour),
-		Algorithms:     envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
-		RateLimitRPS:   envFloat("RATE_LIMIT_RPS", 100),
-		RateLimitBurst: envInt("RATE_LIMIT_BURST", 200),
+	cfg, err := loadServeConfig(args, os.Stderr)
+	if err != nil {
+		logger.Error("invalid serve configuration", "error", err)
+		os.Exit(1)
 	}
 
 	Version = resolveVersion()
-
-	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
-	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "external issuer / base URL (env ISSUER)")
-	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "lifetime when exp omitted (env DEFAULT_TTL)")
-	fs.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
-	fs.DurationVar(&cfg.RotationPeriod, "rotation-interval", cfg.RotationPeriod, "key rotation cadence, 0 disables (env ROTATION_INTERVAL)")
-	fs.DurationVar(&cfg.GracePeriod, "grace-period", cfg.GracePeriod, "retired keys stay published this long (env GRACE_PERIOD)")
-	fs.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable: RS256,ES256,EdDSA (env ALGORITHMS)")
-	fs.Float64Var(&cfg.RateLimitRPS, "rate-limit-rps", cfg.RateLimitRPS, "requests per second per IP (env RATE_LIMIT_RPS)")
-	fs.IntVar(&cfg.RateLimitBurst, "rate-limit-burst", cfg.RateLimitBurst, "burst allowance per IP (env RATE_LIMIT_BURST)")
-
-	if err := fs.Parse(args); err != nil {
-		return
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -147,8 +128,19 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	ring.StartRotation(ctx, cfg.RotationPeriod, logger)
 
+	discoveryExtra, err := parseDiscoveryExtra(cfg.DiscoveryExtraJSON)
+	if err != nil {
+		logger.Error("invalid discovery extra metadata", "error", err)
+		os.Exit(1)
+	}
+
 	factory := tokenfactory.NewFactory(ring, cfg.Issuer, cfg.DefaultTTL, cfg.MaxTTL)
-	srv := server.New(ring, factory, cfg.Issuer, Version, cfg.RateLimitRPS, cfg.RateLimitBurst, server.WithLogger(logger))
+	srv := server.New(ring, factory, cfg.Issuer, Version, cfg.RateLimitRPS, cfg.RateLimitBurst,
+		server.WithLogger(logger),
+		server.WithAudience(cfg.Audience),
+		server.WithScopes(parseScopes(cfg.Scopes)),
+		server.WithDiscoveryExtra(discoveryExtra),
+	)
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           srv.Handler(),
@@ -182,6 +174,82 @@ func runServe(logger *slog.Logger, args []string) {
 	}
 	srv.Close()
 	logger.Info("stopped; ephemeral signing keys discarded")
+}
+
+// defaultServeConfig resolves every serve setting from the environment. Flags
+// parsed by loadServeConfig override these values.
+func defaultServeConfig() serveConfig {
+	return serveConfig{
+		Listen:             envStr("LISTEN", "127.0.0.1:8080"),
+		Issuer:             envStr("ISSUER", "http://127.0.0.1:8080"),
+		DefaultTTL:         envDur("DEFAULT_TTL", time.Hour),
+		MaxTTL:             envDur("MAX_TTL", 24*time.Hour),
+		RotationPeriod:     envDur("ROTATION_INTERVAL", 30*time.Minute),
+		GracePeriod:        envDur("GRACE_PERIOD", 25*time.Hour),
+		Algorithms:         envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
+		RateLimitRPS:       envFloat("RATE_LIMIT_RPS", 100),
+		RateLimitBurst:     envInt("RATE_LIMIT_BURST", 200),
+		Audience:           envStr("AUDIENCE", ""),
+		Scopes:             envStr("SCOPES", ""),
+		DiscoveryExtraJSON: envStr("DISCOVERY_EXTRA_JSON", ""),
+	}
+}
+
+func registerServeFlags(fs *flag.FlagSet, cfg *serveConfig) {
+	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "address to bind (env LISTEN)")
+	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "external issuer / base URL (env ISSUER)")
+	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "lifetime when exp omitted (env DEFAULT_TTL)")
+	fs.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
+	fs.DurationVar(&cfg.RotationPeriod, "rotation-interval", cfg.RotationPeriod, "key rotation cadence, 0 disables (env ROTATION_INTERVAL)")
+	fs.DurationVar(&cfg.GracePeriod, "grace-period", cfg.GracePeriod, "retired keys stay published this long (env GRACE_PERIOD)")
+	fs.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable: RS256,ES256,EdDSA (env ALGORITHMS)")
+	fs.Float64Var(&cfg.RateLimitRPS, "rate-limit-rps", cfg.RateLimitRPS, "requests per second per IP (env RATE_LIMIT_RPS)")
+	fs.IntVar(&cfg.RateLimitBurst, "rate-limit-burst", cfg.RateLimitBurst, "burst allowance per IP (env RATE_LIMIT_BURST)")
+	fs.StringVar(&cfg.Audience, "audience", cfg.Audience, "aud claim for /oauth/token tokens, empty omits it (env AUDIENCE)")
+	fs.StringVar(&cfg.Scopes, "scopes", cfg.Scopes, "comma-separated scopes advertised in discovery (env SCOPES)")
+	fs.StringVar(&cfg.DiscoveryExtraJSON, "discovery-extra-json", cfg.DiscoveryExtraJSON, "JSON object merged into discovery metadata (env DISCOVERY_EXTRA_JSON)")
+}
+
+// loadServeConfig parses serve flags over environment defaults and validates
+// settings that must fail before the server starts.
+func loadServeConfig(args []string, output io.Writer) (serveConfig, error) {
+	cfg := defaultServeConfig()
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(output)
+	registerServeFlags(fs, &cfg)
+	if err := fs.Parse(args); err != nil {
+		return cfg, err
+	}
+	if _, err := parseDiscoveryExtra(cfg.DiscoveryExtraJSON); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// parseDiscoveryExtra validates DISCOVERY_EXTRA_JSON as a JSON object. An empty
+// value disables the additive metadata escape hatch.
+func parseDiscoveryExtra(raw string) (map[string]any, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var extra map[string]any
+	if err := json.Unmarshal([]byte(raw), &extra); err != nil {
+		return nil, fmt.Errorf("DISCOVERY_EXTRA_JSON must be a JSON object: %w", err)
+	}
+	if extra == nil {
+		return nil, errors.New("DISCOVERY_EXTRA_JSON must be a JSON object, not null")
+	}
+	return extra, nil
+}
+
+func parseScopes(raw string) []string {
+	var scopes []string
+	for _, part := range strings.Split(raw, ",") {
+		if scope := strings.TrimSpace(part); scope != "" {
+			scopes = append(scopes, scope)
+		}
+	}
+	return scopes
 }
 
 // resolveVersion returns the version baked in at build time. Builds without

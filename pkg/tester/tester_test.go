@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"sort"
 	"strings"
@@ -451,6 +452,86 @@ func TestOptionsShapeServerBehavior(t *testing.T) {
 	}
 	if tok.ExpiresIn < ttl-time.Second || tok.ExpiresIn > ttl+time.Second {
 		t.Fatalf("default lifetime = %v, want ~%v", tok.ExpiresIn, ttl)
+	}
+}
+
+func TestOAuthOptionsShapeDiscoveryAndTokens(t *testing.T) {
+	s := NewServer(t,
+		WithAlgorithms(RS256),
+		WithAudience("my-api"),
+		WithScopes("read", "write"),
+		WithDiscoveryExtra(map[string]any{
+			"service_documentation": "https://example.test/docs",
+			"issuer":                "https://attacker.example",
+		}),
+	)
+
+	status, body := get(t, s.URL()+"/.well-known/openid-configuration")
+	if status != http.StatusOK {
+		t.Fatalf("discovery status = %d", status)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("decode discovery: %v", err)
+	}
+	if doc["issuer"] != s.Issuer() {
+		t.Errorf("issuer = %v, want derived %q", doc["issuer"], s.Issuer())
+	}
+	if doc["token_endpoint"] != s.URL()+"/oauth/token" {
+		t.Errorf("token_endpoint = %v, want %q", doc["token_endpoint"], s.URL()+"/oauth/token")
+	}
+	if doc["introspection_endpoint"] != s.URL()+"/introspect" {
+		t.Errorf("introspection_endpoint = %v", doc["introspection_endpoint"])
+	}
+	if doc["service_documentation"] != "https://example.test/docs" {
+		t.Errorf("service_documentation = %v", doc["service_documentation"])
+	}
+	scopes, ok := doc["scopes_supported"].([]any)
+	if !ok || len(scopes) != 2 || scopes[0] != "read" || scopes[1] != "write" {
+		t.Errorf("scopes_supported = %#v", doc["scopes_supported"])
+	}
+
+	resp, err := s.Client().PostForm(s.URL()+"/oauth/token", url.Values{
+		"grant_type": {"client_credentials"},
+		"client_id":  {"client"},
+		"scope":      {"read write"},
+	})
+	if err != nil {
+		t.Fatalf("POST /oauth/token: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token status = %d", resp.StatusCode)
+	}
+	var tokenDoc map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&tokenDoc); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	claims := mustVerify(t, s, tokenDoc["access_token"].(string), RS256)
+	if claims["sub"] != "client" || claims["client_id"] != "client" || claims["scope"] != "read write" {
+		t.Errorf("claims = %#v", claims)
+	}
+	if !strings.Contains(strings.Join(toStrings(claims["aud"]), " "), "my-api") {
+		t.Errorf("aud = %#v, want my-api", claims["aud"])
+	}
+}
+
+func toStrings(value any) []string {
+	switch v := value.(type) {
+	case string:
+		return []string{v}
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

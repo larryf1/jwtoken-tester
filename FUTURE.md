@@ -31,8 +31,8 @@ exposure, native TLS) are explicitly opt-in and must be labeled loudly.
 | # | Candidate | Effort | Value | Why it matters |
 |---|-----------|--------|-------|----------------|
 | 1 | Public `pkg/tester` API + leak-free lifecycle | — | Shipped | Delivered in v2.4.0 with a neutral surface and resource-only `Close`. |
-| 2 | Verification and `decode`/`verify` CLI | — | Shipped | `POST /verify` and both CLI commands shipped; introspection deferred to #3. |
-| 3 | Standards-compliant OAuth token endpoint + richer discovery | M | High | Generic OAuth/OIDC clients cannot use the advertised endpoint today. |
+| 2 | Verification and `decode`/`verify` CLI | — | Shipped | `POST /verify` and both CLI commands shipped; introspection shipped with #3. |
+| 3 | Standards-compliant OAuth token endpoint + richer discovery | — | Shipped | Delivered in the unreleased release; authorization-code/PKCE remains deferred to #12. |
 | 4 | More algorithms + negative-token controls | M | High | Broadens consumer compatibility and negative-path coverage. |
 | 5 | Claim/IdP profiles + `id_token`/`/userinfo` | M | High | Makes tokens resemble real gateways instead of hand-built maps. |
 | 6 | JWKS caching headers | S | Medium | Cuts polling and enables realistic cache/rotation tests. |
@@ -114,42 +114,41 @@ caller-supplied keys or key locations and never makes an outbound request.
 repeatable `--alg`, `--leeway`, stdin, `--json`, and exit codes `0`/`1`/`2`. The
 README documents the API and CLI contracts.
 
-**Remaining.** RFC 7662 `POST /introspect` remains a candidate under the
-OAuth/discovery work in #3.
+**Remaining.** None; RFC 7662 `POST /introspect` shipped with the OAuth/discovery work in #3.
 
 ## 3. Standards-compliant OAuth token endpoint and discovery
 
-- **Status:** Candidate
+- **Status:** ✅ Shipped (client credentials and introspection); authorization-code/PKCE deferred
 - **Effort:** Medium
 - **Value:** High
 
-**Problem.** Discovery advertises `/v2/oauth/token`, a bespoke endpoint that
-requires `X-Client-Id` and a `Scope` query parameter. Generic OAuth clients POST
-form-encoded `grant_type=client_credentials` to `token_endpoint` and fail.
+**Delivered.** `POST /oauth/token` implements RFC 6749 client credentials over a
+form body with permissive authentication (HTTP Basic, `client_secret_post`, or
+`client_id` alone), a generic claim profile, optional `aud`, and `alg`/`ttl`
+selection. `POST /introspect` implements RFC 7662 introspection against this
+issuer's live keyring, echoing claims for active tokens and returning only
+`active: false` otherwise. Discovery now advertises `/oauth/token` and
+`/introspect`, adds `grant_types_supported`,
+`token_endpoint_auth_methods_supported`, `claims_supported`, and optional
+`scopes_supported`, and is served at both
+`/.well-known/openid-configuration` and
+`/.well-known/oauth-authorization-server` (RFC 8414). `DISCOVERY_EXTRA_JSON`
+merges additional metadata without overriding the derived core endpoints, and
+the legacy `/v2/oauth/token` endpoint now honors `alg` and `ttl` while retaining
+its bespoke claims. The README and `docs/openapi.yaml` document the new
+contracts.
 
-**Proposal.**
+**Remaining.** A real `/authorize` endpoint with authorization-code + PKCE and
+automatic consent is still deferred to #12; this issuer intentionally has no
+users, sessions, or consent UI. Client secrets remain ignored by design so the
+tool stays useful for negative authentication tests.
 
-- Add `POST /oauth/token` accepting `application/x-www-form-urlencoded` with
-  `grant_type=client_credentials`, `scope`, and `client_id`/`client_secret`
-  (HTTP Basic also accepted). Map `scope` to a `scope` string by default;
-  profiles can emit `scp`, `capabilities`, or other shapes.
-- Add `POST /introspect` accepting the RFC 7662 form body and returning `active`
-  plus claims, for clients that expect an introspection endpoint. Test issuers
-  can skip client authentication, but document that choice.
-- Point discovery `token_endpoint` at `/oauth/token`. Keep `/v2/oauth/token` for
-  compatibility and document both.
-- Add `/.well-known/oauth-authorization-server` (RFC 8414) and fill out useful
-  discovery metadata: `grant_types_supported`, `scopes_supported`,
-  `token_endpoint_auth_methods_supported`, `code_challenge_methods_supported`,
-  `response_modes_supported`, and `userinfo_endpoint` when implemented.
-- Allow discovery overrides through configuration (`DISCOVERY_EXTRA_JSON` or
-  individual flags) so awkward clients can be satisfied without code changes.
-- Make `/v2/oauth/token` honor algorithm and TTL selection instead of always
-  defaulting to RS256.
+**Historical problem.** Discovery previously advertised `/v2/oauth/token`, a
+bespoke endpoint that required `X-Client-Id` and a `Scope` query parameter.
+Generic OAuth clients POST form-encoded `grant_type=client_credentials` to
+`token_endpoint` and failed. The shipped `/oauth/token` endpoint resolves that
+gap while the legacy route remains available for its v2 claim profile.
 
-**Open questions.** Do we need a real `/authorize` + PKCE flow with automatic
-consent for frontend tests, or is client credentials enough? Should
-`X-Client-Secret` ever be validated for negative tests, or remain ignored?
 
 ## 4. More algorithms and negative-token controls
 
@@ -228,8 +227,9 @@ requests.
 - Serve `Cache-Control: public, max-age=...` for the JWKS, with a configurable
   max age, and `Cache-Control: public, max-age=31536000, immutable` for
   `/.well-known/jwks.json/{kid}` (keys are content-addressed by thumbprint).
-- Add `Cache-Control: no-store` and `Pragma: no-cache` to token responses
-  (RFC 6749 §5.1).
+- Add `Cache-Control: no-store` and `Pragma: no-cache` to the remaining token
+  responses (RFC 6749 §5.1). `/oauth/token` and `/introspect` already send both;
+  `/token` and `/v2/oauth/token` do not yet.
 - Provide a no-cache mode for rotation tests, so consumers re-fetch immediately
   instead of serving a stale set.
 
@@ -511,3 +511,4 @@ Smaller ideas that are not detailed above:
 | 2026-11-01 | Prioritized library ergonomics and debugging first | The embeddable API leaks internal types and `/token` has no verification counterpart; fix those before adding more IdP features |
 | 2026-11-01 | Private-key import/export remains opt-in and off by default | Preserves the ephemeral-by-default promise while allowing explicit fixture workflows |
 | 2026-11-02 | Shipped `/verify` and the `decode`/`verify` CLI | Verification is in the product; introspection moved to the OAuth/discovery item so its endpoint can be standards-compliant |
+| 2026-11-02 | Shipped OAuth client-credentials, RFC 7662 introspection, and shared RFC 8414 discovery | Generic OAuth clients can now use the advertised endpoint; authorization-code/PKCE remains deferred because it needs users/consent |

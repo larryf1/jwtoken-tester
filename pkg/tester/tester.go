@@ -131,7 +131,12 @@ func Start(opts ...Option) (*Server, error) {
 	}
 
 	factory := tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
-	internal := server.New(ring, factory, issuer, "test-version", cfg.rateLimitRPS, cfg.rateLimitBurst, server.WithLogger(cfg.logger))
+	internal := server.New(ring, factory, issuer, "test-version", cfg.rateLimitRPS, cfg.rateLimitBurst,
+		server.WithLogger(cfg.logger),
+		server.WithAudience(cfg.audience),
+		server.WithScopes(cfg.scopes),
+		server.WithDiscoveryExtra(cfg.discoveryExtra),
+	)
 	ts.Config.Handler = internal.Handler()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -348,6 +353,9 @@ type config struct {
 	rateLimitRPS     float64
 	rateLimitBurst   int
 	logger           *slog.Logger
+	audience         string
+	scopes           []string
+	discoveryExtra   map[string]any
 }
 
 func defaultConfig() *config {
@@ -426,6 +434,37 @@ func WithLogger(logger *slog.Logger) Option {
 	return func(c *config) {
 		if logger != nil {
 			c.logger = logger
+		}
+	}
+}
+
+// WithAudience sets the aud claim placed on tokens minted by /oauth/token. An
+// empty value omits the claim, which is the default.
+func WithAudience(audience string) Option {
+	return func(c *config) {
+		c.audience = audience
+	}
+}
+
+// WithScopes sets the scope names advertised as scopes_supported in discovery.
+// It does not restrict scopes requested from /oauth/token.
+func WithScopes(scopes ...string) Option {
+	return func(c *config) {
+		c.scopes = append([]string(nil), scopes...)
+	}
+}
+
+// WithDiscoveryExtra merges extra metadata into both discovery documents.
+// Derived core fields always win over the supplied values.
+func WithDiscoveryExtra(extra map[string]any) Option {
+	return func(c *config) {
+		if extra == nil {
+			c.discoveryExtra = nil
+			return
+		}
+		c.discoveryExtra = make(map[string]any, len(extra))
+		for key, value := range extra {
+			c.discoveryExtra[key] = value
 		}
 	}
 }

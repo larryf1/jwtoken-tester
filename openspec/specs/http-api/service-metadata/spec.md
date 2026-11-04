@@ -7,7 +7,7 @@ Serves the service index and version metadata endpoints so clients and operators
 ## Requirements
 
 ### Requirement: Service index document
-`GET /` SHALL return JSON identifying the service, the running version, an ephemeral-issuer warning, and the list of available endpoints. The endpoint list SHALL include the token verification route alongside the existing health, version, JWKS, discovery, and token routes.
+`GET /` SHALL return JSON identifying the service, the running version, an ephemeral-issuer warning, and the list of available endpoints. The endpoint list SHALL include the OAuth token, introspection, RFC 8414 metadata, verification, health, version, JWKS, discovery, and raw token routes.
 
 #### Scenario: Index returns service metadata
 - **WHEN** a client requests `GET /`
@@ -16,6 +16,10 @@ Serves the service index and version metadata endpoints so clients and operators
 #### Scenario: Index advertises verification
 - **WHEN** a client requests `GET /`
 - **THEN** the `endpoints` array includes `POST /verify`
+
+#### Scenario: Index advertises OAuth protocol endpoints
+- **WHEN** a client requests `GET /`
+- **THEN** the `endpoints` array includes `POST /oauth/token`, `POST /introspect`, and `GET /.well-known/oauth-authorization-server`
 
 ### Requirement: Version endpoint
 `GET /version` SHALL return the running server version as JSON.

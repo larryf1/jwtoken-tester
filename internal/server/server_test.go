@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -391,14 +393,17 @@ func TestDiscoveryDocumentPointsAtIssuerAndJWKS(t *testing.T) {
 			if doc["jwks_uri"] != testIssuer+"/.well-known/jwks.json" {
 				t.Fatalf("jwks_uri = %v", doc["jwks_uri"])
 			}
-			if doc["token_endpoint"] != testIssuer+"/v2/oauth/token" {
-				t.Fatalf("token_endpoint = %v, want %q", doc["token_endpoint"], testIssuer+"/v2/oauth/token")
+			if doc["token_endpoint"] != testIssuer+"/oauth/token" {
+				t.Fatalf("token_endpoint = %v, want %q", doc["token_endpoint"], testIssuer+"/oauth/token")
+			}
+			if doc["introspection_endpoint"] != testIssuer+"/introspect" {
+				t.Fatalf("introspection_endpoint = %v, want %q", doc["introspection_endpoint"], testIssuer+"/introspect")
 			}
 			claims, ok := doc["claims_supported"].([]any)
 			if !ok {
 				t.Fatalf("claims_supported missing: %#v", doc["claims_supported"])
 			}
-			wantClaims := []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "capabilities", "idtyp", "allowedResources", "version", "client_id"}
+			wantClaims := []string{"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "scope", "client_id"}
 			if len(claims) != len(wantClaims) {
 				t.Fatalf("claims_supported = %#v, want %v", claims, wantClaims)
 			}
@@ -718,6 +723,11 @@ func TestIndexListsEndpoints(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "POST /verify") {
 		t.Fatalf("index does not list verify endpoint: %s", data)
+	}
+	for _, endpoint := range []string{"GET /version", "POST /oauth/token", "POST /introspect", "GET /.well-known/oauth-authorization-server"} {
+		if !strings.Contains(string(data), endpoint) {
+			t.Errorf("index does not list %s: %s", endpoint, data)
+		}
 	}
 }
 
@@ -1739,5 +1749,1105 @@ func TestVerifyEndpointAuditsWithoutTokenContents(t *testing.T) {
 	logged := buf.String()
 	if strings.Contains(logged, resp.AccessToken) || strings.Contains(logged, "sensitive-subject") {
 		t.Fatalf("audit log leaked token or claims: %s", logged)
+	}
+}
+
+func newOptionTestServer(t *testing.T, opts []Option, algs ...keyring.Algorithm) (*httptest.Server, *keyring.KeyRing, *Server) {
+	t.Helper()
+	if len(algs) == 0 {
+		algs = []keyring.Algorithm{keyring.AlgRS256}
+	}
+	ring, err := keyring.New(time.Hour, algs)
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200, opts...)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+	return ts, ring, srv
+}
+
+func postForm(t *testing.T, client *http.Client, target string, form url.Values) (*http.Response, []byte) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("create form request: %v", err)
+	}
+	req.Header.Set("Content-Type", oauthFormContentType)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", target, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	return resp, data
+}
+
+func decodeBody(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("decode response %s: %v", data, err)
+	}
+	return doc
+}
+
+func tokenAlgorithm(t *testing.T, token string) string {
+	t.Helper()
+	parsed, _, err := jwt5.NewParser().ParseUnverified(token, jwt5.MapClaims{})
+	if err != nil {
+		t.Fatalf("parse token header: %v", err)
+	}
+	alg, _ := parsed.Header["alg"].(string)
+	return alg
+}
+
+func oauthTokenClaims(t *testing.T, ts *httptest.Server, token string, alg keyring.Algorithm) jwt5.MapClaims {
+	t.Helper()
+	set := fetchJWKS(t, ts.URL+"/.well-known/jwks.json")
+	parser := jwt5.NewParser(jwt5.WithValidMethods([]string{string(alg)}), jwt5.WithIssuer(testIssuer))
+	parsed, err := parser.Parse(token, func(tk *jwt5.Token) (any, error) {
+		kid, _ := tk.Header["kid"].(string)
+		key, ok := set.LookupKeyID(kid)
+		if !ok {
+			return nil, fmt.Errorf("unknown kid %q", kid)
+		}
+		return exportPublicKey(t, key)
+	})
+	if err != nil {
+		t.Fatalf("parse minted token: %v", err)
+	}
+	return parsed.Claims.(jwt5.MapClaims)
+}
+
+func TestDiscoveryDocumentAdvertisesOAuthMetadata(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, nil)
+
+	resp, err := http.Get(ts.URL + "/.well-known/openid-configuration")
+	if err != nil {
+		t.Fatalf("GET discovery: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(resp.Body)
+	doc := decodeBody(t, data)
+
+	wantStrings := map[string]string{
+		"issuer":                 testIssuer,
+		"jwks_uri":               testIssuer + "/.well-known/jwks.json",
+		"token_endpoint":         testIssuer + "/oauth/token",
+		"introspection_endpoint": testIssuer + "/introspect",
+	}
+	for key, want := range wantStrings {
+		if doc[key] != want {
+			t.Errorf("%s = %v, want %q", key, doc[key], want)
+		}
+	}
+	for _, key := range []string{"authorization_endpoint", "code_challenge_methods_supported", "userinfo_endpoint", "scopes_supported"} {
+		if _, ok := doc[key]; ok {
+			t.Errorf("%s should be absent: %v", key, doc[key])
+		}
+	}
+	wantLists := map[string][]string{
+		"grant_types_supported":                 {"client_credentials"},
+		"token_endpoint_auth_methods_supported": {"client_secret_basic", "client_secret_post", "none"},
+		"response_types_supported":              {"token"},
+		"subject_types_supported":               {"public"},
+		"claims_supported":                      {"iss", "sub", "aud", "exp", "nbf", "iat", "jti", "scope", "client_id"},
+		"id_token_signing_alg_values_supported": {"RS256"},
+	}
+	for key, want := range wantLists {
+		got, ok := doc[key].([]any)
+		if !ok {
+			t.Errorf("%s missing or wrong type: %#v", key, doc[key])
+			continue
+		}
+		gotStrings := make([]string, len(got))
+		for i, value := range got {
+			gotStrings[i], _ = value.(string)
+		}
+		if !reflect.DeepEqual(gotStrings, want) {
+			t.Errorf("%s = %v, want %v", key, gotStrings, want)
+		}
+	}
+}
+
+func TestBothDiscoveryPathsAgree(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, []Option{WithScopes([]string{"read", "write"})})
+
+	fetch := func(path string) map[string]any {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		data, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d", path, resp.StatusCode)
+		}
+		return decodeBody(t, data)
+	}
+
+	oidc := fetch("/.well-known/openid-configuration")
+	authServer := fetch("/.well-known/oauth-authorization-server")
+	if !reflect.DeepEqual(oidc, authServer) {
+		t.Fatalf("discovery documents differ:\nOIDC: %#v\nRFC 8414: %#v", oidc, authServer)
+	}
+	if scopes, ok := authServer["scopes_supported"].([]any); !ok || len(scopes) != 2 || scopes[0] != "read" || scopes[1] != "write" {
+		t.Fatalf("scopes_supported = %#v", authServer["scopes_supported"])
+	}
+
+	resp, err := http.Post(ts.URL+"/.well-known/oauth-authorization-server", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST RFC 8414 metadata: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST RFC 8414 metadata status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestDiscoveryExtraMetadataIsAdditiveAndCoreFieldsWin(t *testing.T) {
+	extra := map[string]any{
+		"service_documentation":  "https://example.test/docs",
+		"issuer":                 "https://attacker.example",
+		"jwks_uri":               "https://attacker.example/jwks",
+		"token_endpoint":         "https://attacker.example/token",
+		"introspection_endpoint": "https://attacker.example/introspect",
+	}
+	ts, _, _ := newOptionTestServer(t, []Option{WithDiscoveryExtra(extra)})
+
+	for _, path := range []string{"/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		doc := decodeBody(t, data)
+		if doc["service_documentation"] != extra["service_documentation"] {
+			t.Errorf("%s service_documentation = %v", path, doc["service_documentation"])
+		}
+		if doc["issuer"] != testIssuer {
+			t.Errorf("%s issuer = %v, want derived", path, doc["issuer"])
+		}
+		if doc["jwks_uri"] != testIssuer+"/.well-known/jwks.json" {
+			t.Errorf("%s jwks_uri = %v, want derived", path, doc["jwks_uri"])
+		}
+		if doc["token_endpoint"] != testIssuer+"/oauth/token" {
+			t.Errorf("%s token_endpoint = %v, want derived", path, doc["token_endpoint"])
+		}
+		if doc["introspection_endpoint"] != testIssuer+"/introspect" {
+			t.Errorf("%s introspection_endpoint = %v, want derived", path, doc["introspection_endpoint"])
+		}
+	}
+}
+
+func TestOAuthTokenEndpointMintsGenericClaims(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, nil, keyring.AlgRS256)
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+		"grant_type": {"client_credentials"},
+		"client_id":  {"test-client"},
+		"scope":      {"  read   write "},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := resp.Header.Get("Pragma"); got != "no-cache" {
+		t.Errorf("Pragma = %q, want no-cache", got)
+	}
+	doc := decodeBody(t, data)
+	if doc["token_type"] != "Bearer" {
+		t.Errorf("token_type = %v", doc["token_type"])
+	}
+	if doc["scope"] != "read write" {
+		t.Errorf("scope = %v, want normalized", doc["scope"])
+	}
+	if doc["expires_in"].(float64) != 3600 {
+		t.Errorf("expires_in = %v, want 3600", doc["expires_in"])
+	}
+	token, _ := doc["access_token"].(string)
+	if token == "" {
+		t.Fatal("access_token missing")
+	}
+
+	claims := oauthTokenClaims(t, ts, token, keyring.AlgRS256)
+	if claims["iss"] != testIssuer || claims["sub"] != "test-client" || claims["client_id"] != "test-client" {
+		t.Errorf("identity claims = %#v", claims)
+	}
+	if claims["scope"] != "read write" {
+		t.Errorf("scope claim = %v", claims["scope"])
+	}
+	if _, ok := claims["aud"]; ok {
+		t.Errorf("aud should be omitted: %v", claims["aud"])
+	}
+	for _, legacy := range []string{"capabilities", "idtyp", "allowedResources", "version"} {
+		if _, ok := claims[legacy]; ok {
+			t.Errorf("legacy claim %q should be absent", legacy)
+		}
+	}
+	for _, name := range []string{"iat", "nbf", "exp"} {
+		if _, ok := claims[name]; !ok {
+			t.Errorf("claim %q missing", name)
+		}
+	}
+	if jti, ok := claims["jti"].(string); !ok || len(jti) != 36 {
+		t.Errorf("jti = %#v, want UUID-formatted string", claims["jti"])
+	}
+}
+
+func TestOAuthTokenEndpointScopeAndAudienceOptions(t *testing.T) {
+	t.Run("scope omitted", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil)
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		doc := decodeBody(t, data)
+		if _, ok := doc["scope"]; ok {
+			t.Errorf("response scope should be absent: %v", doc["scope"])
+		}
+		claims := oauthTokenClaims(t, ts, doc["access_token"].(string), keyring.AlgRS256)
+		if _, ok := claims["scope"]; ok {
+			t.Errorf("token scope should be absent: %v", claims["scope"])
+		}
+	})
+
+	t.Run("audience configured", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, []Option{WithAudience("my-api")})
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		claims := oauthTokenClaims(t, ts, decodeBody(t, data)["access_token"].(string), keyring.AlgRS256)
+		if !strings.Contains(fmt.Sprint(claims["aud"]), "my-api") {
+			t.Errorf("aud = %v, want my-api", claims["aud"])
+		}
+	})
+
+	t.Run("unlisted scope accepted", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, []Option{WithScopes([]string{"read"})})
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+			"scope":      {"admin"},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		claims := oauthTokenClaims(t, ts, decodeBody(t, data)["access_token"].(string), keyring.AlgRS256)
+		if claims["scope"] != "admin" {
+			t.Errorf("scope = %v, want admin", claims["scope"])
+		}
+	})
+}
+
+func TestOAuthTokenEndpointAuthentication(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, nil)
+
+	tests := []struct {
+		name     string
+		build    func() *http.Request
+		wantCode int
+	}{
+		{
+			name: "basic auth",
+			build: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodPost, ts.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+				req.Header.Set("Content-Type", oauthFormContentType)
+				req.SetBasicAuth("basic-client", "basic-secret")
+				return req
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "form secret",
+			build: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodPost, ts.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials&client_id=form-client&client_secret=wrong"))
+				req.Header.Set("Content-Type", oauthFormContentType)
+				return req
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "client id only",
+			build: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodPost, ts.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials&client_id=id-only"))
+				req.Header.Set("Content-Type", oauthFormContentType)
+				return req
+			},
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "missing client id",
+			build: func() *http.Request {
+				req, _ := http.NewRequest(http.MethodPost, ts.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+				req.Header.Set("Content-Type", oauthFormContentType)
+				return req
+			},
+			wantCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := ts.Client().Do(tt.build())
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tt.wantCode {
+				data, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d, want %d (body %s)", resp.StatusCode, tt.wantCode, data)
+			}
+		})
+	}
+}
+
+func TestOAuthTokenEndpointRejectsBadRequests(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, nil)
+
+	tests := []struct {
+		name      string
+		form      url.Values
+		body      string
+		content   string
+		wantCode  int
+		wantError string
+	}{
+		{name: "missing grant type", form: url.Values{"client_id": {"client"}}, wantCode: http.StatusBadRequest, wantError: "invalid_request"},
+		{name: "unsupported grant type", form: url.Values{"grant_type": {"password"}, "client_id": {"client"}}, wantCode: http.StatusBadRequest, wantError: "unsupported_grant_type"},
+		{name: "json body", body: `{"grant_type":"client_credentials","client_id":"client"}`, content: "application/json", wantCode: http.StatusBadRequest, wantError: "invalid_request"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var resp *http.Response
+			var data []byte
+			var err error
+			if tt.body != "" {
+				req, reqErr := http.NewRequest(http.MethodPost, ts.URL+"/oauth/token", strings.NewReader(tt.body))
+				if reqErr != nil {
+					t.Fatalf("create request: %v", reqErr)
+				}
+				req.Header.Set("Content-Type", tt.content)
+				resp, err = ts.Client().Do(req)
+				if err != nil {
+					t.Fatalf("request: %v", err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				data, _ = io.ReadAll(resp.Body)
+			} else {
+				resp, data = postForm(t, ts.Client(), ts.URL+"/oauth/token", tt.form)
+			}
+			if resp.StatusCode != tt.wantCode {
+				t.Fatalf("status = %d, want %d (body %s)", resp.StatusCode, tt.wantCode, data)
+			}
+			doc := decodeBody(t, data)
+			if doc["error"] != tt.wantError {
+				t.Errorf("error = %v, want %q", doc["error"], tt.wantError)
+			}
+			if doc["error_description"] == "" || doc["error_description"] == nil {
+				t.Errorf("error_description missing: %#v", doc)
+			}
+		})
+	}
+
+	resp, err := http.Get(ts.URL + "/oauth/token")
+	if err != nil {
+		t.Fatalf("GET /oauth/token: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /oauth/token status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestOAuthTokenEndpointAlgorithmSelection(t *testing.T) {
+	t.Run("explicit algorithm honored", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil, keyring.AlgRS256, keyring.AlgES256)
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+			"alg":        {"ES256"},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		token := decodeBody(t, data)["access_token"].(string)
+		if got := tokenAlgorithm(t, token); got != "ES256" {
+			t.Errorf("token alg = %q, want ES256", got)
+		}
+	})
+
+	t.Run("falls back to first enabled when RS256 disabled", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil, keyring.AlgES256)
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		token := decodeBody(t, data)["access_token"].(string)
+		if got := tokenAlgorithm(t, token); got != "ES256" {
+			t.Errorf("token alg = %q, want ES256", got)
+		}
+	})
+
+	t.Run("RS256 preferred when enabled", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil, keyring.AlgES256, keyring.AlgRS256)
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+		})
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		token := decodeBody(t, data)["access_token"].(string)
+		if got := tokenAlgorithm(t, token); got != "RS256" {
+			t.Errorf("token alg = %q, want RS256", got)
+		}
+	})
+
+	for _, alg := range []string{"EdDSA", "HS256", "not-an-alg"} {
+		t.Run("rejects "+alg, func(t *testing.T) {
+			ts, _, _ := newOptionTestServer(t, nil, keyring.AlgRS256)
+			resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+				"grant_type": {"client_credentials"},
+				"client_id":  {"client"},
+				"alg":        {alg},
+			})
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", resp.StatusCode, data)
+			}
+			if doc := decodeBody(t, data); doc["error"] != "invalid_request" {
+				t.Errorf("error = %v, want invalid_request", doc["error"])
+			}
+		})
+	}
+}
+
+func TestOAuthTokenEndpointTTLSelection(t *testing.T) {
+	tests := []struct {
+		name       string
+		ttl        string
+		wantCode   int
+		wantExpiry float64
+	}{
+		{name: "honored", ttl: "5m", wantCode: http.StatusOK, wantExpiry: 300},
+		{name: "zero allowed", ttl: "0s", wantCode: http.StatusOK, wantExpiry: 0},
+		{name: "cap enforced", ttl: "25h", wantCode: http.StatusBadRequest},
+		{name: "invalid", ttl: "soon", wantCode: http.StatusBadRequest},
+		{name: "negative", ttl: "-1s", wantCode: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts, _, _ := newOptionTestServer(t, nil)
+			resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+				"grant_type": {"client_credentials"},
+				"client_id":  {"client"},
+				"ttl":        {tt.ttl},
+			})
+			if resp.StatusCode != tt.wantCode {
+				t.Fatalf("status = %d, want %d (body %s)", resp.StatusCode, tt.wantCode, data)
+			}
+			doc := decodeBody(t, data)
+			if tt.wantCode != http.StatusOK {
+				if doc["error"] != "invalid_request" {
+					t.Errorf("error = %v, want invalid_request", doc["error"])
+				}
+				return
+			}
+			if doc["expires_in"].(float64) != tt.wantExpiry {
+				t.Errorf("expires_in = %v, want %v", doc["expires_in"], tt.wantExpiry)
+			}
+			if tt.wantExpiry == 0 {
+				return
+			}
+			claims := oauthTokenClaims(t, ts, doc["access_token"].(string), keyring.AlgRS256)
+			exp, _ := claims["exp"].(float64)
+			iat, _ := claims["iat"].(float64)
+			if got := exp - iat; got != tt.wantExpiry {
+				t.Errorf("exp - iat = %v, want %v", got, tt.wantExpiry)
+			}
+		})
+	}
+}
+
+func TestOAuthTokenEndpointBodyLimit(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, nil)
+	form := url.Values{
+		"grant_type": {"client_credentials"},
+		"client_id":  {"client"},
+		"junk":       {strings.Repeat("a", maxRequestBody)},
+	}
+	resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", form)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+	if doc := decodeBody(t, data); doc["error"] != "invalid_request" {
+		t.Errorf("error = %v, want invalid_request", doc["error"])
+	}
+}
+
+func TestOAuthTokenEndpointErrorMappings(t *testing.T) {
+	t.Run("no active key", func(t *testing.T) {
+		ring := &noActiveKeyRing{}
+		factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+		srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+		ts := httptest.NewServer(srv.Handler())
+		t.Cleanup(func() {
+			ts.Close()
+			srv.Close()
+		})
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+		})
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (body %s)", resp.StatusCode, data)
+		}
+		doc := decodeBody(t, data)
+		if doc["error"] != "temporarily_unavailable" || doc["error_description"] == nil {
+			t.Errorf("body = %#v", doc)
+		}
+	})
+
+	t.Run("internal failure", func(t *testing.T) {
+		ring := &internalErrRing{}
+		factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+		srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+		ts := httptest.NewServer(srv.Handler())
+		t.Cleanup(func() {
+			ts.Close()
+			srv.Close()
+		})
+		resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+			"grant_type": {"client_credentials"},
+			"client_id":  {"client"},
+		})
+		if resp.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500 (body %s)", resp.StatusCode, data)
+		}
+		doc := decodeBody(t, data)
+		if doc["error"] != "server_error" || doc["error_description"] == nil {
+			t.Errorf("body = %#v", doc)
+		}
+	})
+}
+
+func TestOAuthTokenEndpointAuditing(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	var buf bytes.Buffer
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200,
+		WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))),
+		WithAudience("my-api"),
+	)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {"audit-client"},
+		"client_secret": {"super-secret"},
+		"scope":         {"read write"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	token := decodeBody(t, data)["access_token"].(string)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("decode audit log: %v (%s)", err, buf.String())
+	}
+	if entry["event"] != "oauth_token_minted" {
+		t.Errorf("event = %v, want oauth_token_minted", entry["event"])
+	}
+	if entry["alg"] != "RS256" || entry["scope"] != "read write" || entry["expires_in"].(float64) != 3600 {
+		t.Errorf("audit fields = %#v", entry)
+	}
+	if entry["path"] != "/oauth/token" || entry["method"] != http.MethodPost || entry["request_id"] == "" {
+		t.Errorf("audit request fields = %#v", entry)
+	}
+	logged := buf.String()
+	if strings.Contains(logged, "super-secret") || strings.Contains(logged, token) {
+		t.Fatalf("audit log leaked secret or token: %s", logged)
+	}
+
+	buf.Reset()
+	resp, data = postForm(t, ts.Client(), ts.URL+"/oauth/token", url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {"audit-client"},
+		"client_secret": {"super-secret"},
+		"alg":           {"EdDSA"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("decode failure audit log: %v (%s)", err, buf.String())
+	}
+	if entry["event"] != "oauth_token_mint_failed" || entry["error"] != "invalid_request" {
+		t.Errorf("failure audit fields = %#v", entry)
+	}
+	if strings.Contains(buf.String(), "super-secret") {
+		t.Fatalf("failure audit log leaked secret: %s", buf.String())
+	}
+}
+
+func TestIntrospectReportsActiveToken(t *testing.T) {
+	ts, ring, _ := newOptionTestServer(t, nil)
+	token := mintVerifyToken(t, ring, map[string]any{
+		"sub":          "user-1",
+		"scope":        "read write",
+		"custom_claim": "custom-value",
+	})
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{
+		"token":           {token},
+		"token_type_hint": {"refresh_token"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := resp.Header.Get("Pragma"); got != "no-cache" {
+		t.Errorf("Pragma = %q, want no-cache", got)
+	}
+	doc := decodeBody(t, data)
+	if doc["active"] != true {
+		t.Fatalf("active = %v, want true", doc["active"])
+	}
+	if doc["token_type"] != "Bearer" {
+		t.Errorf("token_type = %v, want Bearer", doc["token_type"])
+	}
+	if doc["sub"] != "user-1" || doc["scope"] != "read write" || doc["custom_claim"] != "custom-value" {
+		t.Errorf("claims not echoed: %#v", doc)
+	}
+}
+
+func TestIntrospectActiveAndTokenTypeAreAuthoritative(t *testing.T) {
+	ts, ring, _ := newOptionTestServer(t, nil)
+	token := mintVerifyToken(t, ring, map[string]any{
+		"sub":        "user-1",
+		"active":     false,
+		"token_type": "Custom",
+	})
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {token}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	doc := decodeBody(t, data)
+	if doc["active"] != true {
+		t.Errorf("active = %v, want true", doc["active"])
+	}
+	if doc["token_type"] != "Bearer" {
+		t.Errorf("token_type = %v, want Bearer", doc["token_type"])
+	}
+}
+
+func TestIntrospectReportsInactiveTokens(t *testing.T) {
+	ts, ring, _ := newOptionTestServer(t, nil)
+
+	cases := []struct {
+		name  string
+		token string
+	}{
+		{name: "expired", token: mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "exp": "-5m", "custom_claim": "secret"})},
+		{name: "not yet valid", token: mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "nbf": "1h"})},
+		{name: "wrong issuer", token: mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "iss": "https://attacker.example"})},
+		{name: "unknown kid", token: signedVerifyToken(t, ring, map[string]any{"iss": testIssuer, "sub": "user-1", "exp": time.Now().Add(time.Hour).Unix()}, map[string]any{"kid": "unknown-kid"})},
+		{name: "bad signature", token: tamperServerToken(mintVerifyToken(t, ring, map[string]any{"sub": "user-1"}))},
+		{name: "malformed", token: "not-a-compact-jws"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {tc.token}})
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (body %s)", resp.StatusCode, data)
+			}
+			doc := decodeBody(t, data)
+			if len(doc) != 1 || doc["active"] != false {
+				t.Fatalf("inactive response = %#v, want only active:false", doc)
+			}
+		})
+	}
+}
+
+func TestIntrospectRetiredKeyWithinGraceIsActive(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+
+	oldKey, err := ring.Signer(keyring.AlgRS256)
+	if err != nil {
+		t.Fatalf("Signer() error = %v", err)
+	}
+	if err := ring.Rotate(); err != nil {
+		t.Fatalf("Rotate() error = %v", err)
+	}
+	now := time.Now().UTC()
+	tok := jwt5.NewWithClaims(jwt5.SigningMethodRS256, jwt5.MapClaims{
+		"iss": testIssuer,
+		"sub": "retired-client",
+		"iat": now.Unix(),
+		"nbf": now.Unix(),
+		"exp": now.Add(time.Hour).Unix(),
+	})
+	tok.Header["kid"] = oldKey.Kid()
+	signed, err := tok.SignedString(oldKey.Private)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {signed}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	doc := decodeBody(t, data)
+	if doc["active"] != true {
+		t.Fatalf("active = %v, want true (body %#v)", doc["active"], doc)
+	}
+}
+
+func TestIntrospectRequestErrors(t *testing.T) {
+	ts, _, _ := newOptionTestServer(t, nil)
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing token status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+	if doc := decodeBody(t, data); doc["error"] != "invalid_request" || doc["error_description"] == nil {
+		t.Errorf("missing token body = %#v", doc)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/introspect", strings.NewReader(`{"token":"x"}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	jsonResp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("non-form request: %v", err)
+	}
+	defer func() { _ = jsonResp.Body.Close() }()
+	jsonData, _ := io.ReadAll(jsonResp.Body)
+	if jsonResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("non-form status = %d, want 400 (body %s)", jsonResp.StatusCode, jsonData)
+	}
+	if doc := decodeBody(t, jsonData); doc["error"] != "invalid_request" {
+		t.Errorf("non-form error = %v", doc["error"])
+	}
+
+	resp, data = postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {strings.Repeat("a", maxRequestBody)}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized status = %d, want 400 (body %s)", resp.StatusCode, data)
+	}
+
+	getResp, err := http.Get(ts.URL + "/introspect")
+	if err != nil {
+		t.Fatalf("GET /introspect: %v", err)
+	}
+	defer func() { _ = getResp.Body.Close() }()
+	if getResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /introspect status = %d, want 405", getResp.StatusCode)
+	}
+}
+
+func TestIntrospectInternalError(t *testing.T) {
+	realRing, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	token := mintVerifyToken(t, realRing, map[string]any{"sub": "user-1"})
+
+	ring := &internalErrRing{}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+
+	resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {token}})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body %s)", resp.StatusCode, data)
+	}
+	if doc := decodeBody(t, data); doc["error"] != "server_error" {
+		t.Errorf("error = %v, want server_error", doc["error"])
+	}
+}
+
+func TestIntrospectAuditing(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	var buf bytes.Buffer
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200,
+		WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))),
+	)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+
+	activeToken := mintVerifyToken(t, ring, map[string]any{"sub": "user-1"})
+	resp, data := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {activeToken}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("decode audit log: %v (%s)", err, buf.String())
+	}
+	if entry["event"] != "token_introspected" || entry["active"] != true {
+		t.Errorf("audit fields = %#v", entry)
+	}
+	if entry["path"] != "/introspect" || entry["method"] != http.MethodPost || entry["request_id"] == "" {
+		t.Errorf("audit request fields = %#v", entry)
+	}
+	if strings.Contains(buf.String(), activeToken) || strings.Contains(buf.String(), "user-1") {
+		t.Fatalf("audit log leaked token or claims: %s", buf.String())
+	}
+
+	buf.Reset()
+	expired := mintVerifyToken(t, ring, map[string]any{"sub": "user-1", "exp": "-5m"})
+	resp, data = postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {expired}})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("decode audit log: %v (%s)", err, buf.String())
+	}
+	if entry["active"] != false || entry["reason"] != "expired" {
+		t.Errorf("inactive audit fields = %#v", entry)
+	}
+	if strings.Contains(buf.String(), expired) {
+		t.Fatalf("audit log leaked token: %s", buf.String())
+	}
+}
+
+func TestLegacyOAuthTokenEndpointAlgorithmAndTTL(t *testing.T) {
+	newLegacyRequest := func(t *testing.T, ts *httptest.Server, query string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/v2/oauth/token?"+query, nil)
+		if err != nil {
+			t.Fatalf("create request: %v", err)
+		}
+		req.Header.Set("X-Client-Id", "client")
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		data, _ := io.ReadAll(resp.Body)
+		return resp, data
+	}
+
+	t.Run("explicit algorithm honored", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil, keyring.AlgRS256, keyring.AlgES256)
+		resp, data := newLegacyRequest(t, ts, "Scope=read&alg=ES256")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		token := decodeBody(t, data)["access_token"].(string)
+		if got := tokenAlgorithm(t, token); got != "ES256" {
+			t.Errorf("token alg = %q, want ES256", got)
+		}
+	})
+
+	t.Run("falls back to first enabled", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil, keyring.AlgES256)
+		resp, data := newLegacyRequest(t, ts, "Scope=read")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		token := decodeBody(t, data)["access_token"].(string)
+		if got := tokenAlgorithm(t, token); got != "ES256" {
+			t.Errorf("token alg = %q, want ES256", got)
+		}
+	})
+
+	t.Run("ttl honored", func(t *testing.T) {
+		ts, _, _ := newOptionTestServer(t, nil)
+		resp, data := newLegacyRequest(t, ts, "Scope=read&ttl=5m")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+		}
+		if got := decodeBody(t, data)["expires_in"].(float64); got != 300 {
+			t.Errorf("expires_in = %v, want 300", got)
+		}
+	})
+
+	for _, tc := range []struct{ name, query string }{
+		{name: "ttl cap", query: "Scope=read&ttl=25h"},
+		{name: "invalid ttl", query: "Scope=read&ttl=soon"},
+		{name: "negative ttl", query: "Scope=read&ttl=-1s"},
+		{name: "unknown algorithm", query: "Scope=read&alg=HS256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, _, _ := newOptionTestServer(t, nil)
+			resp, data := newLegacyRequest(t, ts, tc.query)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", resp.StatusCode, data)
+			}
+		})
+	}
+}
+
+func TestLegacyOAuthTokenEndpointAuditsSelectedAlgorithm(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256, keyring.AlgES256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	var buf bytes.Buffer
+	srv := New(ring, factory, testIssuer, "test-version", 100, 200,
+		WithLogger(slog.New(slog.NewJSONHandler(&buf, nil))),
+	)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v2/oauth/token?Scope=read&alg=ES256", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("X-Client-Id", "client")
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, data)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("decode audit log: %v (%s)", err, buf.String())
+	}
+	if entry["event"] != "token_minted" || entry["alg"] != "ES256" {
+		t.Fatalf("audit fields = %#v", entry)
+	}
+}
+
+func TestOAuthDiscoveryTokenVerifyIntrospectEndToEnd(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256, keyring.AlgES256})
+	if err != nil {
+		t.Fatalf("keyring.New() error = %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	issuer := "http://" + listener.Addr().String()
+	factory := tokenfactory.NewFactory(ring, issuer, time.Hour, 24*time.Hour)
+	srv := New(ring, factory, issuer, "test-version", 100, 200,
+		WithAudience("my-api"),
+		WithScopes([]string{"read", "write"}),
+	)
+	ts := httptest.NewUnstartedServer(nil)
+	ts.Listener = listener
+	ts.Config.Handler = srv.Handler()
+	ts.Start()
+	t.Cleanup(func() {
+		ts.Close()
+		srv.Close()
+	})
+
+	resp, err := http.Get(ts.URL + "/.well-known/oauth-authorization-server")
+	if err != nil {
+		t.Fatalf("GET discovery: %v", err)
+	}
+	discoveryData, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("discovery status = %d", resp.StatusCode)
+	}
+	discovery := decodeBody(t, discoveryData)
+	tokenEndpoint, _ := discovery["token_endpoint"].(string)
+	if tokenEndpoint != ts.URL+"/oauth/token" {
+		t.Fatalf("token_endpoint = %q, want %q", tokenEndpoint, ts.URL+"/oauth/token")
+	}
+
+	tokenResp, tokenData := postForm(t, ts.Client(), tokenEndpoint, url.Values{
+		"grant_type": {"client_credentials"},
+		"client_id":  {"e2e-client"},
+		"scope":      {"read write"},
+	})
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("token status = %d, body = %s", tokenResp.StatusCode, tokenData)
+	}
+	tokenDoc := decodeBody(t, tokenData)
+	token, _ := tokenDoc["access_token"].(string)
+	if token == "" {
+		t.Fatal("access_token missing")
+	}
+
+	verifyResp, verifyData := postJSON(t, ts.URL+"/verify", `{"token":"`+token+`"}`)
+	if verifyResp.StatusCode != http.StatusOK {
+		t.Fatalf("verify status = %d, body = %s", verifyResp.StatusCode, verifyData)
+	}
+	verdict := decodeVerdict(t, verifyData)
+	if verdict["valid"] != true {
+		t.Fatalf("verdict = %#v", verdict)
+	}
+	claims, _ := verdict["claims"].(map[string]any)
+	if claims["sub"] != "e2e-client" || !strings.Contains(fmt.Sprint(claims["aud"]), "my-api") || claims["scope"] != "read write" {
+		t.Fatalf("claims = %#v", claims)
+	}
+
+	introspectResp, introspectData := postForm(t, ts.Client(), ts.URL+"/introspect", url.Values{"token": {token}})
+	if introspectResp.StatusCode != http.StatusOK {
+		t.Fatalf("introspect status = %d, body = %s", introspectResp.StatusCode, introspectData)
+	}
+	introspection := decodeBody(t, introspectData)
+	if introspection["active"] != true || introspection["token_type"] != "Bearer" || introspection["sub"] != "e2e-client" {
+		t.Fatalf("introspection = %#v", introspection)
 	}
 }
