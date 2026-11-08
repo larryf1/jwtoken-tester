@@ -41,9 +41,9 @@ plugins:
           flags: m
           to: '${nextRelease.version}'
         - files: docs/openapi.yaml
-          from: '^  version: "[0-9]+\.[0-9]+\.[0-9]+"$'
+          from: '^  version: "?[0-9]+\.[0-9]+\.[0-9]+"?$'
           flags: m
-          to: '  version: "${nextRelease.version}"'
+          to: '  version: ${nextRelease.version}'
 
   # Push the release commit and tag, then create the GitHub Release with the
   # Semrel-generated changelog as its notes.

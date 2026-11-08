@@ -18,3 +18,6 @@
 # Semrel runtime / lock files
 .semrel-release.lock
 CHANGELOG.mda
+
+# Swag generated docs (reference only; not committed)
+/docs/swagger/
