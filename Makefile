@@ -13,7 +13,7 @@ else
 EXE_SUFFIX :=
 endif
 
-.PHONY: all build run test coverage coverage-html lint lint-install lint-commits govulncheck vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
+.PHONY: all build run test coverage coverage-html lint lint-install lint-commits lint-openapi docs-openapi govulncheck vet fmt fmt-check tidy clean help docker-build docker-push docker-compose-up docker-compose-down docker-logs
 
 all: lint test build ## Lint, test, then build
 
@@ -51,8 +51,9 @@ docker-compose-down: ## Stop docker-compose stack
 docker-logs: ## Follow docker-compose logs
 	docker compose -f docker/docker-compose.yml logs -f
 
-docs-openapi: ## Deprecated: release automation updates the OpenAPI version
-	@echo "docs-openapi is deprecated; versioning is handled by Semrel"
+docs-openapi: ## Regenerate docs/openapi.yaml from swag annotations
+	swag init --parseDependency --parseInternal -g internal/server/server.go -o docs --ot yaml --parseDepth 2 --v3.1
+	mv docs/swagger.yaml docs/openapi.yaml
 
 test: ## Run all unit tests
 	go test ./...
@@ -89,6 +90,9 @@ lint-commits: ## Lint commits on this branch against Conventional Commits (same 
 		git show -s --format=%B $$sha | go run github.com/SemRels/semrel/cmd/semrel@v0.28.3 commitlint --stdin || fail=1; \
 	done; \
 	exit $$fail
+
+lint-openapi: ## Check that server routes match docs/openapi.yaml
+	go run ./cmd/openapi-lint
 
 govulncheck: ## Scan the module for known vulnerabilities (same as CI)
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

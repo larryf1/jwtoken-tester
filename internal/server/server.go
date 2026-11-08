@@ -1,3 +1,32 @@
+// Package server provides the HTTP endpoints for the jwtoken-tester service.
+//
+//	Ephemeral JWT/JWKS test issuer for integration testing JWT-aware services.
+//	This is a test tool only - not a production IdP. Keys are generated in-memory
+//	and discarded on shutdown. No TLS is implemented; terminate TLS at a reverse proxy.
+//
+//	@title			jwtoken-tester API
+//	@version		2.5.0
+//	@contact.name	jwtoken-tester
+//	@contact.url	https://github.com/larryf1/jwtoken-tester
+//	@contact.email	larryf1@gmail.com
+//	@license.name	MIT
+//	@license.url	https://opensource.org/licenses/MIT
+//	@securityDefinitions.apikey	BearerAuth
+//	@in				header
+//	@name			Authorization
+//	@description	Type "Bearer" followed by a space and JWT.
+//	@tag.name		Metadata
+//	@tag.description	Service metadata and health
+//	@tag.name		Keys
+//	@tag.description	JWKS and key management endpoints
+//	@tag.name		Tokens
+//	@tag.description	Token minting endpoints
+//	@tag.name		Introspection
+//	@tag.description	RFC 7662 token introspection
+//	@tag.name		Verification
+//	@tag.description	Self-check token verification
+//	@tag.name		Discovery
+//	@tag.description	OpenID Connect and OAuth authorization server metadata
 package server
 
 import (
@@ -243,12 +272,28 @@ func getRequestID(r *http.Request) string {
 	return r.Header.Get("X-Request-ID")
 }
 
+// handleVersion returns the service version.
+//
+//	@ID			getVersion
+//	@Tags		Metadata
+//	@Summary	Version information
+//	@Description	Returns the service version
+//	@Success	200	{object}	VersionResponse	"Version information"
+//	@Router	/version [get]
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{
 		"version": s.Version,
 	})
 }
 
+// handleIndex returns basic service information and available endpoints.
+//
+//	@ID			getIndex
+//	@Tags		Metadata
+//	@Summary	Service index
+//	@Description	Returns basic service information and available endpoints
+//	@Success	200	{object}	IndexResponse	"Successful response"
+//	@Router	/ [get]
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": "jwtoken-tester",
@@ -270,6 +315,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleHealth returns a liveness probe with active key IDs per algorithm.
+//
+//	@ID			getHealth
+//	@Tags		Metadata
+//	@Summary	Health check
+//	@Description	Liveness probe with active key IDs per algorithm
+//	@Success	200	{object}	HealthResponse	"Service is healthy"
+//	@Router	/healthz [get]
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	doc := map[string]any{
 		"status":  "ok",
@@ -296,6 +349,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
+// handleJWKS returns the live public key set.
+//
+//	@ID			getJWKS
+//	@Tags		Keys
+//	@Summary	JSON Web Key Set (JWKS)
+//	@Description	Returns the live public key set including active keys and retired keys still within their grace period. Each key includes RFC 7638 thumbprint-derived kid, use=sig, and algorithm (RS256, ES256, or EdDSA).
+//	@Success	200	{object}	JWKS	"JWKS document"
+//	@Failure	500	{object}	ErrorResponse	"Internal server error"
+//	@Router	/.well-known/jwks.json [get]
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	set, err := s.ring.JWKS()
 	if err != nil {
@@ -312,6 +374,17 @@ func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// handleJWKByKID fetches a single public key by its thumbprint-derived kid.
+//
+//	@ID			getJWKByKID
+//	@Tags		Keys
+//	@Summary	Get single JWK by Key ID
+//	@Description	Fetches a single public key from the live key set by its thumbprint-derived kid. Returns the same shape as one entry of the JWKS set. Retired keys still inside their grace window are reachable.
+//	@Param		kid	path	string	true	"RFC 7638 thumbprint-derived Key ID"
+//	@Success	200	{object}	JWK	"JWK document"
+//	@Failure	400	{object}	ErrorResponse	"Missing kid parameter"
+//	@Failure	404	{object}	ErrorResponse	"Key not found"
+//	@Router	/.well-known/jwks.json/{kid} [get]
 func (s *Server) handleJWKByKID(w http.ResponseWriter, r *http.Request) {
 	// Extract kid from path: /.well-known/jwks.json/<kid>
 	kid := strings.TrimPrefix(r.URL.Path, "/.well-known/jwks.json/")
@@ -378,14 +451,43 @@ func (s *Server) discoveryDocument() map[string]any {
 	return doc
 }
 
+// handleDiscovery returns the OpenID Connect discovery document.
+//
+//	@ID			getDiscovery
+//	@Tags		Discovery
+//	@Summary	OpenID Connect Discovery Document
+//	@Description	Shared metadata document advertising issuer, derived jwks_uri, token_endpoint, introspection_endpoint, grant_types_supported, token_endpoint_auth_methods_supported, scopes_supported when configured, and id_token_signing_alg_values_supported listing all enabled algorithms.
+//	@Success	200	{object}	DiscoveryResponse	"Discovery document"
+//	@Router	/.well-known/openid-configuration [get]
 func (s *Server) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.discoveryDocument())
 }
 
+// handleAuthorizationServerMetadata returns the OAuth 2.0 authorization server metadata.
+//
+//	@ID			getAuthorizationServerMetadata
+//	@Tags		Discovery
+//	@Summary	OAuth 2.0 Authorization Server Metadata (RFC 8414)
+//	@Description	Serves the same metadata document as /.well-known/openid-configuration. Derived core fields (issuer, jwks_uri, token_endpoint, introspection_endpoint) cannot be overridden by DISCOVERY_EXTRA_JSON.
+//	@Success	200	{object}	DiscoveryResponse	"Authorization server metadata"
+//	@Router	/.well-known/oauth-authorization-server [get]
 func (s *Server) handleAuthorizationServerMetadata(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.discoveryDocument())
 }
 
+// handleToken mints a signed JWT with the requested claims and algorithm.
+//
+//	@ID			mintToken
+//	@Tags		Tokens
+//	@Summary	Mint a JWT
+//	@Description	Mints a signed JWT with the requested claims and algorithm. Empty body mints an anonymous token with defaults. Claim handling: iss, iat, nbf are injected automatically; explicit values in claims win. exp, iat, nbf accept epoch seconds, durations, or RFC 3339 timestamps. Omitted exp means now + DEFAULT_TTL (default 1h). Lifetimes beyond MAX_TTL (default 24h) are refused with 400. Algorithms: RS256, ES256, EdDSA (must be enabled).
+//	@Param		request	body	TokenRequest	false	"Token minting request (empty body uses defaults)"
+//	@Success	200	{object}	TokenResponse	"Token minted successfully"
+//	@Failure	400	{object}	ErrorResponse	"Bad request (invalid JSON, unsupported algorithm, TTL too long)"
+//	@Failure	405	{object}	ErrorResponse	"Method not allowed"
+//	@Failure	429	{object}	ErrorResponse	"Rate limit exceeded"
+//	@Failure	503	{object}	ErrorResponse	"No active signing key available"
+//	@Router	/token [post]
 func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	var req tokenfactory.Request
 	body := http.MaxBytesReader(w, r.Body, maxRequestBody)
@@ -459,6 +561,19 @@ func (a *audience) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// handleVerify performs self-check verification against the live keyring.
+//
+//	@ID			verifyToken
+//	@Tags		Verification
+//	@Summary	Verify a token against this issuer's live keyring
+//	@Description	Self-check verification: the token is checked only against the running issuer's live keyring. The endpoint accepts no caller-supplied key material or key locations and performs no outbound network request. Unknown request fields are rejected with 400. The issuer claim is always validated against this server's configured issuer. Failure reasons are a closed, ordered set: malformed, alg, kid, signature, expired, not_yet_valid, issuer, audience.
+//	@Param		request	body	VerifyRequest	true	"Verification request"
+//	@Success	200	{object}	VerifyResponse	"Verification completed; inspect valid and reason"
+//	@Failure	400	{object}	ErrorResponse	"Invalid request (missing token, unknown field, bad alg or leeway, oversized body)"
+//	@Failure	405	{object}	ErrorResponse	"Method not allowed"
+//	@Failure	429	{object}	ErrorResponse	"Rate limit exceeded"
+//	@Failure	500	{object}	ErrorResponse	"Verification failed for a reason outside the closed reason set"
+//	@Router	/verify [post]
 func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
@@ -633,6 +748,20 @@ func (s *Server) logOAuthMintFailure(r *http.Request, code string, attrs map[str
 	s.logTokenEvent(r, "oauth_token_mint_failed", attrs)
 }
 
+// handleOAuthClientCredentialsToken mints a token with OAuth 2.0 client credentials.
+//
+//	@ID			mintOAuthClientCredentialsToken
+//	@Tags		Tokens
+//	@Summary	Mint a token with OAuth 2.0 client credentials
+//	@Description	RFC 6749 client-credentials token endpoint for generic OAuth clients. The request body must be application/x-www-form-urlencoded. Authentication is permissive: a client identifier is required, but client_secret is never validated. Claims: iss, sub and client_id from the client identifier, iat, nbf, exp, jti, a space-normalized scope when requested, and aud only when AUDIENCE is configured.
+//	@Param		request	body	OAuthTokenRequest	true	"OAuth token request"
+//	@Success	200	{object}	OAuthTokenResponse	"Token minted successfully"
+//	@Failure	400	{object}	OAuthErrorResponse	"Invalid request, unsupported grant type, disabled algorithm, invalid TTL, or oversized body"
+//	@Failure	405	{object}	OAuthErrorResponse	"Method not allowed"
+//	@Failure	429	{object}	ErrorResponse	"Rate limit exceeded"
+//	@Failure	500	{object}	OAuthErrorResponse	"Internal token-minting failure"
+//	@Failure	503	{object}	OAuthErrorResponse	"No active signing key available"
+//	@Router	/oauth/token [post]
 func (s *Server) handleOAuthClientCredentialsToken(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 
@@ -732,6 +861,19 @@ func (s *Server) handleOAuthClientCredentialsToken(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handleIntrospect verifies a token against this server's live keyring (RFC 7662).
+//
+//	@ID			introspectToken
+//	@Tags		Introspection
+//	@Summary	Introspect a token (RFC 7662)
+//	@Description	Verifies the supplied token against this server's live keyring and configured issuer. The request body must be application/x-www-form-urlencoded; token_type_hint is accepted and ignored. Authentication is permissive and no client identifier is required. Active tokens echo every token claim plus authoritative active: true and token_type: Bearer. Expired, not-yet-valid, wrong-issuer, unknown-key, bad-signature, and malformed tokens return 200 with exactly {"active": false} and no claim fields.
+//	@Param		request	body	IntrospectionRequest	true	"Introspection request"
+//	@Success	200	{object}	IntrospectionResponse	"Introspection result; inspect active"
+//	@Failure	400	{object}	OAuthErrorResponse	"Invalid request (missing token, non-form body, oversized body)"
+//	@Failure	405	{object}	OAuthErrorResponse	"Method not allowed"
+//	@Failure	429	{object}	ErrorResponse	"Rate limit exceeded"
+//	@Failure	500	{object}	OAuthErrorResponse	"Verification failed unexpectedly"
+//	@Router	/introspect [post]
 func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 	setNoStore(w)
 
@@ -779,6 +921,23 @@ func (s *Server) handleIntrospect(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handleOAuthToken mints a legacy v2 OAuth-style JWT.
+//
+//	@ID			mintOAuthV2Token
+//	@Tags		Tokens
+//	@Summary	Mint a legacy v2 OAuth-style JWT
+//	@Description	Legacy bespoke endpoint retained for compatibility. Discovery advertises /oauth/token instead; use this route only when the v2 claim profile is required. Mints a signed v2 token using X-Client-Id and the comma-separated Scope query parameter. Requested scopes are copied into the token's capabilities claim. The JWT also includes sub, aud, idtyp, allowedResources, version, client_id, and the standard iss, iat, nbf, exp, and jti claims.
+//	@Param		X-Client-Id	header	string	true	"Client identifier" example(client-id)
+//	@Param		X-Client-Secret	header	string	false	"Accepted for request compatibility but not validated by this test issuer"
+//	@Param		Scope	query	string	true	"Comma-separated capabilities to place in the token" example(capability1,capability2)
+//	@Param		alg	query	string	false	"Enabled signing algorithm; defaults to RS256 when enabled, else the first enabled algorithm" enum(RS256,ES256,EdDSA) example(ES256)
+//	@Param		ttl	query	string	false	"Non-negative Go duration capped by MAX_TTL" example(5m)
+//	@Success	200	{object}	TokenResponse	"Token minted successfully"
+//	@Failure	400	{object}	ErrorResponse	"Missing client ID or scope"
+//	@Failure	405	{object}	ErrorResponse	"Method not allowed"
+//	@Failure	429	{object}	ErrorResponse	"Rate limit exceeded"
+//	@Failure	503	{object}	ErrorResponse	"No active signing key available"
+//	@Router	/v2/oauth/token [post]
 func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	clientID := strings.TrimSpace(r.Header.Get("X-Client-Id"))
 	if clientID == "" {
