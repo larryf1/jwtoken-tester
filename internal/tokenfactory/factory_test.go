@@ -5,7 +5,9 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -405,7 +407,10 @@ type failingSignerRing struct {
 }
 
 func (f *failingSignerRing) Signer(keyring.Algorithm) (*keyring.Key, error) { return nil, f.err }
-func (f *failingSignerRing) ActiveKid(keyring.Algorithm) (string, error)    { return "", f.err }
+func (f *failingSignerRing) SignerByKID(string, keyring.Algorithm) (*keyring.Key, error) {
+	return nil, f.err
+}
+func (f *failingSignerRing) ActiveKid(keyring.Algorithm) (string, error) { return "", f.err }
 func (f *failingSignerRing) Lookup(string) (crypto.PublicKey, keyring.KeyStatus, error) {
 	return nil, "", f.err
 }
@@ -592,7 +597,10 @@ type failingSignRing struct {
 }
 
 func (f *failingSignRing) Signer(keyring.Algorithm) (*keyring.Key, error) { return nil, f.err }
-func (f *failingSignRing) ActiveKid(keyring.Algorithm) (string, error)    { return "", f.err }
+func (f *failingSignRing) SignerByKID(string, keyring.Algorithm) (*keyring.Key, error) {
+	return nil, f.err
+}
+func (f *failingSignRing) ActiveKid(keyring.Algorithm) (string, error) { return "", f.err }
 func (f *failingSignRing) Lookup(string) (crypto.PublicKey, keyring.KeyStatus, error) {
 	return nil, "", f.err
 }
@@ -631,5 +639,92 @@ func TestMintWithNilRequest(t *testing.T) {
 	}
 	if resp.AccessToken == "" {
 		t.Fatal("empty access token")
+	}
+}
+
+func TestNegativeControlsAndHeaders(t *testing.T) {
+	f, ring := newTestFactory(t, keyring.AlgRS256)
+	active, _ := ring.Signer(keyring.AlgRS256)
+	resp, err := f.Mint(&Request{KID: active.Kid(), Typ: "at+jwt", CTY: "application/json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(resp.AccessToken, ".")
+	hb, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	var header map[string]any
+	_ = json.Unmarshal(hb, &header)
+	if header["typ"] != "at+jwt" || header["cty"] != "application/json" || header["kid"] != active.Kid() {
+		t.Fatalf("header = %#v", header)
+	}
+	if _, err := f.Mint(&Request{Corrupt: "signature"}); !errors.Is(err, ErrNegativeDisabled) {
+		t.Fatalf("disabled error = %v", err)
+	}
+	if _, err := f.Mint(&Request{KID: "unknown-kid"}); !errors.Is(err, ErrNegativeDisabled) {
+		t.Fatalf("unknown kid disabled error = %v", err)
+	}
+	wrongKid, err := f.Mint(&Request{KID: "unknown-kid", AllowNegative: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongHeader, _ := base64.RawURLEncoding.DecodeString(strings.Split(wrongKid.AccessToken, ".")[0])
+	var wrong map[string]any
+	_ = json.Unmarshal(wrongHeader, &wrong)
+	if wrong["kid"] != "unknown-kid" {
+		t.Fatalf("wrong kid header = %#v", wrong)
+	}
+	if _, err := f.Mint(&Request{Corrupt: "invalid", AllowNegative: true}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("invalid mode error = %v", err)
+	}
+	resp, err = f.Mint(&Request{Corrupt: "duplicate_claims", AllowNegative: true, Claims: map[string]any{"sub": "one"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := base64.RawURLEncoding.DecodeString(strings.Split(resp.AccessToken, ".")[1])
+	if strings.Count(string(payload), `"sub"`) != 2 {
+		t.Fatalf("payload lacks duplicate sub: %s", payload)
+	}
+}
+
+func TestHS256RequiresSecretAndSigns(t *testing.T) {
+	f, _ := newTestFactory(t, keyring.AlgRS256)
+	if _, err := f.Mint(&Request{Alg: "HS256"}); !errors.Is(err, ErrUnsupportedAlg) {
+		t.Fatalf("missing secret error = %v", err)
+	}
+	f.SetHMACSecret([]byte(strings.Repeat("s", 32)))
+	resp, err := f.Mint(&Request{Alg: "HS256"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(resp.AccessToken, ".")
+	mac := hmac.New(sha256.New, []byte(strings.Repeat("s", 32)))
+	_, _ = mac.Write([]byte(parts[0] + "." + parts[1]))
+	if !hmac.Equal([]byte(parts[2]), []byte(base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))) {
+		t.Fatal("HS256 signature mismatch")
+	}
+}
+
+func TestNegativeCorruptModes(t *testing.T) {
+	f, ring := newTestFactory(t, keyring.AlgRS256)
+	for _, mode := range []string{"signature", "payload", "header", "truncate"} {
+		t.Run(mode, func(t *testing.T) {
+			resp, err := f.Mint(&Request{Corrupt: mode, AllowNegative: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			signer, _ := ring.Signer(keyring.AlgRS256)
+			parser := jwt5.NewParser(jwt5.WithValidMethods([]string{"RS256"}))
+			_, err = parser.Parse(resp.AccessToken, func(*jwt5.Token) (any, error) { return getPublicKey(t, signer.Private) })
+			if err == nil {
+				t.Fatalf("corrupt %s token unexpectedly verified", mode)
+			}
+		})
+	}
+	resp, err := f.Mint(&Request{Alg: "none", AllowNegative: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(resp.AccessToken, ".")
+	if len(parts) != 3 || parts[2] != "" {
+		t.Fatalf("none token = %q", resp.AccessToken)
 	}
 }

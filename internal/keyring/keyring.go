@@ -21,8 +21,27 @@ import (
 )
 
 const (
-	rsaBits = 2048
+	defaultRSABits = 2048
+	minRSABits     = 1024
 )
+
+// Option configures a KeyRing at construction time.
+type Option func(*config) error
+
+type config struct {
+	rsaBits int
+}
+
+// WithRSABits sets the RSA modulus size used for RSA and RSA-PSS algorithms.
+// Values below the minimum are rejected by New. Values are integers by
+// construction; configuration layers are responsible for rejecting
+// non-integer text before calling this option.
+func WithRSABits(bits int) Option {
+	return func(c *config) error {
+		c.rsaBits = bits
+		return nil
+	}
+}
 
 var (
 	ErrNoActiveKey    = errors.New("keyring: no active signing key")
@@ -30,11 +49,28 @@ var (
 	ErrKeyNotFound    = errors.New("keyring: key not found")
 )
 
+// jwx refuses to import RSA keys below 2048 bits by default. This tool
+// deliberately supports RSA_BITS values down to minRSABits for
+// consumer-compatibility tests, so align the JWK validation floor with the
+// keyring minimum.
+func init() {
+	if err := jwk.Settings(jwk.WithMinRSAModulusBits(minRSABits)); err != nil {
+		panic(fmt.Sprintf("keyring: configure jwk minimum RSA modulus: %v", err))
+	}
+}
+
 type Algorithm string
 
 const (
 	AlgRS256 Algorithm = "RS256"
+	AlgRS384 Algorithm = "RS384"
+	AlgRS512 Algorithm = "RS512"
+	AlgPS256 Algorithm = "PS256"
+	AlgPS384 Algorithm = "PS384"
+	AlgPS512 Algorithm = "PS512"
 	AlgES256 Algorithm = "ES256"
+	AlgES384 Algorithm = "ES384"
+	AlgES512 Algorithm = "ES512"
 	AlgEdDSA Algorithm = "EdDSA"
 )
 
@@ -48,10 +84,22 @@ const (
 )
 
 var (
-	allAlgorithms = []Algorithm{AlgRS256, AlgES256, AlgEdDSA}
+	allAlgorithms = []Algorithm{
+		AlgRS256, AlgRS384, AlgRS512,
+		AlgPS256, AlgPS384, AlgPS512,
+		AlgES256, AlgES384, AlgES512,
+		AlgEdDSA,
+	}
 	jwaAlgorithms = map[Algorithm]jwa.KeyAlgorithm{
 		AlgRS256: jwa.RS256(),
+		AlgRS384: jwa.RS384(),
+		AlgRS512: jwa.RS512(),
+		AlgPS256: jwa.PS256(),
+		AlgPS384: jwa.PS384(),
+		AlgPS512: jwa.PS512(),
 		AlgES256: jwa.ES256(),
+		AlgES384: jwa.ES384(),
+		AlgES512: jwa.ES512(),
 		AlgEdDSA: jwa.EdDSA(),
 	}
 )
@@ -84,10 +132,12 @@ type KeyRing struct {
 	retired map[Algorithm][]*Key
 	grace   time.Duration
 	enabled map[Algorithm]bool
+	rsaBits int
 }
 
 type Ring interface {
 	Signer(alg Algorithm) (*Key, error)
+	SignerByKID(kid string, alg Algorithm) (*Key, error)
 	ActiveKid(alg Algorithm) (string, error)
 	Lookup(kid string) (crypto.PublicKey, KeyStatus, error)
 	JWKS() (jwk.Set, error)
@@ -100,16 +150,32 @@ type Ring interface {
 	EnabledAlgorithms() []Algorithm
 }
 
-func New(grace time.Duration, enabledAlgs []Algorithm) (*KeyRing, error) {
+func New(grace time.Duration, enabledAlgs []Algorithm, opts ...Option) (*KeyRing, error) {
+	cfg := config{rsaBits: defaultRSABits}
+	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+		if err := opt(&cfg); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.rsaBits < minRSABits {
+		return nil, fmt.Errorf("keyring: RSA bits %d is below minimum %d", cfg.rsaBits, minRSABits)
+	}
+
 	enabled := make(map[Algorithm]bool)
 	for _, alg := range allAlgorithms {
 		enabled[alg] = false
 	}
 	for _, alg := range enabledAlgs {
+		if _, ok := jwaAlgorithms[alg]; !ok {
+			return nil, fmt.Errorf("%w: %s", ErrUnsupportedAlg, alg)
+		}
 		enabled[alg] = true
 	}
 
-	if !enabled[AlgRS256] && !enabled[AlgES256] && !enabled[AlgEdDSA] {
+	if len(enabledAlgs) == 0 {
 		return nil, errors.New("keyring: at least one algorithm must be enabled")
 	}
 
@@ -118,6 +184,7 @@ func New(grace time.Duration, enabledAlgs []Algorithm) (*KeyRing, error) {
 		active:  make(map[Algorithm]*Key),
 		retired: make(map[Algorithm][]*Key),
 		enabled: enabled,
+		rsaBits: cfg.rsaBits,
 	}
 
 	for _, alg := range allAlgorithms {
@@ -133,20 +200,24 @@ func New(grace time.Duration, enabledAlgs []Algorithm) (*KeyRing, error) {
 }
 
 func (r *KeyRing) generateKey(alg Algorithm) (*Key, error) {
-	var priv crypto.PrivateKey
-	var jwaAlg jwa.KeyAlgorithm
-	var err error
+	jwaAlg, ok := jwaAlgorithms[alg]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedAlg, alg)
+	}
 
+	var priv crypto.PrivateKey
+	var err error
 	switch alg {
-	case AlgRS256:
-		priv, err = rsa.GenerateKey(rand.Reader, rsaBits)
-		jwaAlg = jwa.RS256()
+	case AlgRS256, AlgRS384, AlgRS512, AlgPS256, AlgPS384, AlgPS512:
+		priv, err = rsa.GenerateKey(rand.Reader, r.rsaBits)
 	case AlgES256:
 		priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		jwaAlg = jwa.ES256()
+	case AlgES384:
+		priv, err = ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	case AlgES512:
+		priv, err = ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	case AlgEdDSA:
 		_, priv, err = ed25519.GenerateKey(rand.Reader)
-		jwaAlg = jwa.EdDSA()
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedAlg, alg)
 	}
@@ -197,6 +268,39 @@ func (r *KeyRing) Signer(alg Algorithm) (*Key, error) {
 		return nil, ErrNoActiveKey
 	}
 	return k, nil
+}
+
+// SignerByKID returns the active or retired key with the given kid, provided
+// it belongs to the requested algorithm. Unknown kids return ErrKeyNotFound.
+// A key whose algorithm differs returns ErrUnsupportedAlg so callers can treat
+// the selection as a malformed request rather than an unknown negative control.
+func (r *KeyRing) SignerByKID(kid string, alg Algorithm) (*Key, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	found := func(k *Key) (*Key, error) {
+		if k == nil || k.Kid() != kid {
+			return nil, nil
+		}
+		if k.Algorithm != alg {
+			return nil, fmt.Errorf("%w: kid %q uses %s, requested %s", ErrUnsupportedAlg, kid, k.Algorithm, alg)
+		}
+		return k, nil
+	}
+
+	for _, k := range r.active {
+		if got, err := found(k); err != nil || got != nil {
+			return got, err
+		}
+	}
+	for _, keys := range r.retired {
+		for _, k := range keys {
+			if got, err := found(k); err != nil || got != nil {
+				return got, err
+			}
+		}
+	}
+	return nil, fmt.Errorf("%w: kid %q", ErrKeyNotFound, kid)
 }
 
 func (r *KeyRing) ActiveKid(alg Algorithm) (string, error) {

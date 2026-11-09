@@ -1,6 +1,7 @@
 package tester_test
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -12,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,6 +85,41 @@ func TestPublicAPIMintVerifiesAgainstJWKS(t *testing.T) {
 				t.Fatalf("iss = %v, want %s", claims["iss"], srv.Issuer())
 			}
 		})
+	}
+}
+
+func TestPublicAPINegativeAndHMACOptions(t *testing.T) {
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	srv, err := tester.Start(tester.WithAlgorithms(tester.RS256), tester.WithNegativeTokens(true), tester.WithHMACSecret(secret), tester.WithRSAKeyBits(1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	unsigned, err := srv.Mint(tester.MintRequest{Algorithm: tester.None})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(strings.Split(unsigned.AccessToken, ".")) != 3 || strings.Split(unsigned.AccessToken, ".")[2] != "" {
+		t.Fatalf("none token = %q", unsigned.AccessToken)
+	}
+	hmacToken, err := srv.Mint(tester.MintRequest{Algorithm: tester.HS256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hmacToken.AccessToken == "" {
+		t.Fatal("empty HS256 token")
+	}
+	keys, err := srv.JWKSJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(keys, []byte("HS256")) || bytes.Contains(keys, secret) {
+		t.Fatalf("JWKS exposes HMAC data: %s", keys)
+	}
+	for _, key := range srv.Keys() {
+		if key.Algorithm == tester.HS256 || key.Algorithm == tester.None {
+			t.Fatalf("non-asymmetric key published: %#v", key)
+		}
 	}
 }
 

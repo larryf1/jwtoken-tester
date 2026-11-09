@@ -152,9 +152,15 @@ gap while the legacy route remains available for its v2 claim profile.
 
 ## 4. More algorithms and negative-token controls
 
-- **Status:** Candidate
+- **Status:** Shipped
 - **Effort:** Medium
 - **Value:** High
+
+Delivered in this change: expanded asymmetric algorithms, configurable RSA size,
+opt-in negative controls, explicit HS256 support for one-shot and embedded token
+minting, and matching HTTP, CLI, embedding, and OpenAPI behavior.
+
+The proposal below records the original rationale.
 
 **Problem.** RS256, ES256, and EdDSA cover common cases but not PS256/PS384/PS512,
 RS384/RS512, ES384/ES512, or HS256. There is also no supported way to generate

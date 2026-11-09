@@ -38,16 +38,25 @@ type serveConfig struct {
 	Audience           string
 	Scopes             string
 	DiscoveryExtraJSON string
+	RSABits            int
+	AllowNegative      bool
 }
 
 type printTokenConfig struct {
-	Issuer     string
-	DefaultTTL time.Duration
-	MaxTTL     time.Duration
-	Algorithms string
-	Claims     string
-	Alg        string
-	Headers    string
+	Issuer         string
+	DefaultTTL     time.Duration
+	MaxTTL         time.Duration
+	Algorithms     string
+	Claims         string
+	Alg            string
+	Headers        string
+	RSABits        int
+	KID            string
+	Typ            string
+	CTY            string
+	Corrupt        string
+	DuplicateClaim string
+	HMACSecretFile string
 }
 
 func main() {
@@ -121,7 +130,7 @@ func runServe(logger *slog.Logger, args []string) {
 	defer stop()
 
 	enabledAlgs := parseAlgorithms(cfg.Algorithms)
-	ring, err := keyring.New(cfg.GracePeriod, enabledAlgs)
+	ring, err := keyring.New(cfg.GracePeriod, enabledAlgs, keyring.WithRSABits(cfg.RSABits))
 	if err != nil {
 		logger.Error("initializing key ring", "error", err)
 		os.Exit(1)
@@ -140,6 +149,7 @@ func runServe(logger *slog.Logger, args []string) {
 		server.WithAudience(cfg.Audience),
 		server.WithScopes(parseScopes(cfg.Scopes)),
 		server.WithDiscoveryExtra(discoveryExtra),
+		server.WithAllowNegativeTokens(cfg.AllowNegative),
 	)
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
@@ -179,6 +189,14 @@ func runServe(logger *slog.Logger, args []string) {
 // defaultServeConfig resolves every serve setting from the environment. Flags
 // parsed by loadServeConfig override these values.
 func defaultServeConfig() serveConfig {
+	rsaBits, err := strconv.Atoi(envStr("RSA_BITS", "2048"))
+	if err != nil {
+		rsaBits = -1
+	}
+	allowNegative, err := strconv.ParseBool(envStr("ALLOW_NEGATIVE_TOKENS", "false"))
+	if err != nil {
+		allowNegative = false
+	}
 	return serveConfig{
 		Listen:             envStr("LISTEN", "127.0.0.1:8080"),
 		Issuer:             envStr("ISSUER", "http://127.0.0.1:8080"),
@@ -192,6 +210,8 @@ func defaultServeConfig() serveConfig {
 		Audience:           envStr("AUDIENCE", ""),
 		Scopes:             envStr("SCOPES", ""),
 		DiscoveryExtraJSON: envStr("DISCOVERY_EXTRA_JSON", ""),
+		RSABits:            rsaBits,
+		AllowNegative:      allowNegative,
 	}
 }
 
@@ -208,6 +228,8 @@ func registerServeFlags(fs *flag.FlagSet, cfg *serveConfig) {
 	fs.StringVar(&cfg.Audience, "audience", cfg.Audience, "aud claim for /oauth/token tokens, empty omits it (env AUDIENCE)")
 	fs.StringVar(&cfg.Scopes, "scopes", cfg.Scopes, "comma-separated scopes advertised in discovery (env SCOPES)")
 	fs.StringVar(&cfg.DiscoveryExtraJSON, "discovery-extra-json", cfg.DiscoveryExtraJSON, "JSON object merged into discovery metadata (env DISCOVERY_EXTRA_JSON)")
+	fs.IntVar(&cfg.RSABits, "rsa-bits", cfg.RSABits, "RSA modulus bits (env RSA_BITS)")
+	fs.BoolVar(&cfg.AllowNegative, "allow-negative-tokens", cfg.AllowNegative, "enable negative token controls on /token (env ALLOW_NEGATIVE_TOKENS)")
 }
 
 // loadServeConfig parses serve flags over environment defaults and validates
@@ -220,8 +242,31 @@ func loadServeConfig(args []string, output io.Writer) (serveConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return cfg, err
 	}
+	flagSet := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { flagSet[f.Name] = true })
+	if raw := os.Getenv("ALLOW_NEGATIVE_TOKENS"); raw != "" && !flagSet["allow-negative-tokens"] {
+		if _, err := strconv.ParseBool(raw); err != nil {
+			return cfg, errors.New("ALLOW_NEGATIVE_TOKENS must be a boolean")
+		}
+	}
+	if raw := os.Getenv("RSA_BITS"); raw != "" && !flagSet["rsa-bits"] {
+		if _, err := strconv.Atoi(raw); err != nil {
+			return cfg, errors.New("RSA_BITS must be an integer")
+		}
+	}
 	if _, err := parseDiscoveryExtra(cfg.DiscoveryExtraJSON); err != nil {
 		return cfg, err
+	}
+	if cfg.RSABits < 1024 {
+		return cfg, errors.New("RSA_BITS must be an integer of at least 1024")
+	}
+	for _, alg := range parseAlgorithms(cfg.Algorithms) {
+		if alg == "HS256" {
+			return cfg, errors.New("HS256 is not supported by serve")
+		}
+		if alg == "none" {
+			return cfg, errors.New("none is not a supported serve algorithm")
+		}
 	}
 	return cfg, nil
 }
@@ -300,24 +345,48 @@ func vcsRevision(info *debug.BuildInfo) string {
 
 func runPrintToken(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("print-token", flag.ExitOnError)
+	rsaBits := 2048
+	if raw := os.Getenv("RSA_BITS"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil {
+			if !hasFlag(args, "rsa-bits") {
+				logger.Error("invalid RSA_BITS", "error", "must be an integer")
+				os.Exit(1)
+			}
+		} else {
+			rsaBits = parsed
+		}
+	}
 
 	cfg := printTokenConfig{
 		Issuer:     envStr("ISSUER", "http://127.0.0.1:8080"),
 		DefaultTTL: envDur("DEFAULT_TTL", time.Hour),
 		MaxTTL:     envDur("MAX_TTL", 24*time.Hour),
 		Algorithms: envStr("ALGORITHMS", "RS256,ES256,EdDSA"),
+		RSABits:    rsaBits,
 	}
 
 	fs.StringVar(&cfg.Issuer, "issuer", cfg.Issuer, "issuer URL for token (env ISSUER)")
 	fs.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "default token lifetime (env DEFAULT_TTL)")
 	fs.DurationVar(&cfg.MaxTTL, "max-ttl", cfg.MaxTTL, "maximum token lifetime, 0 disables cap (env MAX_TTL)")
 	fs.StringVar(&cfg.Algorithms, "algorithms", cfg.Algorithms, "comma-separated algorithms to enable (env ALGORITHMS)")
+	fs.IntVar(&cfg.RSABits, "rsa-bits", cfg.RSABits, "RSA modulus bits (env RSA_BITS)")
+	fs.StringVar(&cfg.KID, "kid", "", "protected key ID (env none)")
+	fs.StringVar(&cfg.Typ, "typ", "JWT", "protected typ header")
+	fs.StringVar(&cfg.CTY, "cty", "", "protected cty header")
+	fs.StringVar(&cfg.Corrupt, "corrupt", "", "negative token defect: signature, payload, header, truncate, duplicate_claims")
+	fs.StringVar(&cfg.DuplicateClaim, "duplicate-claim", "", "claim name to duplicate")
+	fs.StringVar(&cfg.HMACSecretFile, "hmac-secret-file", "", "file containing the HS256 shared secret (or HMAC_SECRET env)")
 	fs.StringVar(&cfg.Claims, "claims", "", `JSON object with custom claims (e.g. '{"sub":"user-1","roles":["admin"]}')`)
-	fs.StringVar(&cfg.Alg, "alg", "RS256", "signing algorithm: RS256, ES256, EdDSA")
+	fs.StringVar(&cfg.Alg, "alg", "RS256", "signing algorithm: enabled asymmetric algorithm, HS256, or none")
 	fs.StringVar(&cfg.Headers, "headers", "", `JSON object with extra JOSE headers`)
 
 	if err := fs.Parse(args); err != nil {
 		return
+	}
+	if cfg.RSABits < 1024 {
+		logger.Error("invalid RSA_BITS", "error", "must be at least 1024")
+		os.Exit(1)
 	}
 
 	enabledAlgs := parseAlgorithms(cfg.Algorithms)
@@ -326,13 +395,24 @@ func runPrintToken(logger *slog.Logger, args []string) {
 		os.Exit(1)
 	}
 
-	ring, err := keyring.New(cfg.MaxTTL, enabledAlgs)
+	ring, err := keyring.New(cfg.MaxTTL, enabledAlgs, keyring.WithRSABits(cfg.RSABits))
 	if err != nil {
 		logger.Error("initializing key ring", "error", err)
 		os.Exit(1)
 	}
 
 	factory := tokenfactory.NewFactory(ring, cfg.Issuer, cfg.DefaultTTL, cfg.MaxTTL)
+	secret := []byte(os.Getenv("HMAC_SECRET"))
+	if cfg.HMACSecretFile != "" {
+		secret, err = os.ReadFile(cfg.HMACSecretFile)
+		if err != nil {
+			logger.Error("reading HMAC secret file", "error", err)
+			os.Exit(1)
+		}
+	}
+	if len(secret) > 0 {
+		factory.SetHMACSecret(secret)
+	}
 
 	var claims map[string]any
 	if cfg.Claims != "" {
@@ -354,6 +434,7 @@ func runPrintToken(logger *slog.Logger, args []string) {
 		Claims:  claims,
 		Alg:     cfg.Alg,
 		Headers: headers,
+		KID:     cfg.KID, Typ: cfg.Typ, CTY: cfg.CTY, Corrupt: cfg.Corrupt, DuplicateClaim: cfg.DuplicateClaim, AllowNegative: true,
 	})
 	if err != nil {
 		logger.Error("minting token", "error", err)
@@ -361,6 +442,15 @@ func runPrintToken(logger *slog.Logger, args []string) {
 	}
 
 	fmt.Println(resp.AccessToken)
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == "--"+name || strings.HasPrefix(arg, "--"+name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // runHealthcheck probes the local /healthz endpoint. It exists so a container

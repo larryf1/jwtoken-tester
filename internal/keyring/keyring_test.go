@@ -6,9 +6,11 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -48,6 +50,75 @@ func newTestRing(t *testing.T, grace time.Duration, algs ...Algorithm) *KeyRing 
 		t.Fatalf("New() error = %v", err)
 	}
 	return r
+}
+
+func TestAllAlgorithmsKeyTypeAndJWA(t *testing.T) {
+	type expected struct {
+		kind  string
+		curve elliptic.Curve
+	}
+	want := map[Algorithm]expected{
+		AlgRS256: {kind: "rsa"},
+		AlgRS384: {kind: "rsa"},
+		AlgRS512: {kind: "rsa"},
+		AlgPS256: {kind: "rsa"},
+		AlgPS384: {kind: "rsa"},
+		AlgPS512: {kind: "rsa"},
+		AlgES256: {kind: "ecdsa", curve: elliptic.P256()},
+		AlgES384: {kind: "ecdsa", curve: elliptic.P384()},
+		AlgES512: {kind: "ecdsa", curve: elliptic.P521()},
+		AlgEdDSA: {kind: "ed25519"},
+	}
+	if len(want) != len(allAlgorithms) {
+		t.Fatalf("test table covers %d algorithms, registry has %d", len(want), len(allAlgorithms))
+	}
+
+	for _, alg := range allAlgorithms {
+		t.Run(string(alg), func(t *testing.T) {
+			exp, ok := want[alg]
+			if !ok {
+				t.Fatalf("algorithm %s missing from test table", alg)
+			}
+			jwaAlg, ok := jwaAlgorithms[alg]
+			if !ok || jwaAlg == nil {
+				t.Fatalf("jwaAlgorithms[%s] is missing", alg)
+			}
+			if got := jwaAlg.String(); got != string(alg) {
+				t.Fatalf("jwaAlgorithms[%s] = %s, want %s", alg, got, alg)
+			}
+
+			r := newTestRing(t, time.Hour, alg)
+			k, err := r.Signer(alg)
+			if err != nil {
+				t.Fatalf("Signer() error = %v", err)
+			}
+			switch exp.kind {
+			case "rsa":
+				if _, ok := k.Public.(*rsa.PublicKey); !ok {
+					t.Fatalf("Public type = %T, want *rsa.PublicKey", k.Public)
+				}
+			case "ecdsa":
+				pub, ok := k.Public.(*ecdsa.PublicKey)
+				if !ok {
+					t.Fatalf("Public type = %T, want *ecdsa.PublicKey", k.Public)
+				}
+				if pub.Curve != exp.curve {
+					t.Fatalf("curve = %s, want %s", pub.Curve.Params().Name, exp.curve.Params().Name)
+				}
+			case "ed25519":
+				if _, ok := k.Public.(ed25519.PublicKey); !ok {
+					t.Fatalf("Public type = %T, want ed25519.PublicKey", k.Public)
+				}
+			default:
+				t.Fatalf("unknown expected kind %q", exp.kind)
+			}
+
+			gotAlg, ok := k.PubJWK.Algorithm()
+			if !ok || gotAlg != jwaAlg {
+				t.Fatalf("public JWK alg = %v, want %v", gotAlg, jwaAlg)
+			}
+		})
+	}
 }
 
 func TestKidIsRFC7638Thumbprint(t *testing.T) {
@@ -462,6 +533,82 @@ func TestActiveKidReturnsErrorWhenAlgDisabled(t *testing.T) {
 	}
 }
 
+func TestExpandedAlgorithmViewsAreAsymmetricDeterministicAndSorted(t *testing.T) {
+	enabled := []Algorithm{AlgRS256, AlgPS256, AlgES384, AlgES512, AlgEdDSA}
+	r := newTestRing(t, time.Hour, enabled...)
+
+	wantOrder := []Algorithm{AlgRS256, AlgPS256, AlgES384, AlgES512, AlgEdDSA}
+	gotOrder := r.EnabledAlgorithms()
+	if !reflect.DeepEqual(gotOrder, wantOrder) {
+		t.Fatalf("EnabledAlgorithms() = %v, want %v", gotOrder, wantOrder)
+	}
+	for _, alg := range gotOrder {
+		if alg == "none" || alg == "HS256" {
+			t.Fatalf("EnabledAlgorithms() contains non-asymmetric algorithm %q", alg)
+		}
+	}
+
+	first, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	second, err := r.JWKS()
+	if err != nil {
+		t.Fatalf("JWKS() error = %v", err)
+	}
+	if first.Len() != len(enabled) || second.Len() != len(enabled) {
+		t.Fatalf("JWKS length = %d/%d, want %d", first.Len(), second.Len(), len(enabled))
+	}
+
+	var previous string
+	for i := 0; i < first.Len(); i++ {
+		firstKey, _ := first.Key(i)
+		secondKey, _ := second.Key(i)
+		firstKid, _ := firstKey.KeyID()
+		secondKid, _ := secondKey.KeyID()
+		if firstKid != secondKid {
+			t.Fatalf("JWKS key order changed at index %d: %q vs %q", i, firstKid, secondKid)
+		}
+		if i > 0 && firstKid < previous {
+			t.Fatalf("JWKS not sorted by kid: %q before %q", previous, firstKid)
+		}
+		previous = firstKid
+		algVal, ok := firstKey.Algorithm()
+		if !ok {
+			t.Fatalf("JWKS key %q has no alg", firstKid)
+		}
+		if algVal.String() == "HS256" || algVal.String() == "none" {
+			t.Fatalf("JWKS contains non-asymmetric algorithm %q", algVal)
+		}
+	}
+
+	snapshot := r.Snapshot()
+	if len(snapshot) != len(enabled) {
+		t.Fatalf("Snapshot() length = %d, want %d", len(snapshot), len(enabled))
+	}
+	for i := 1; i < len(snapshot); i++ {
+		if snapshot[i].Kid() < snapshot[i-1].Kid() {
+			t.Fatalf("Snapshot() not sorted by kid: %q before %q", snapshot[i-1].Kid(), snapshot[i].Kid())
+		}
+	}
+	for _, k := range snapshot {
+		if k.Algorithm == "none" || k.Algorithm == "HS256" {
+			t.Fatalf("Snapshot() contains non-asymmetric algorithm %q", k.Algorithm)
+		}
+	}
+}
+
+func TestNewRejectsNonAsymmetricAlgorithms(t *testing.T) {
+	for _, alg := range []Algorithm{"none", "HS256"} {
+		t.Run(string(alg), func(t *testing.T) {
+			_, err := New(time.Hour, []Algorithm{alg})
+			if !errors.Is(err, ErrUnsupportedAlg) {
+				t.Fatalf("New(%q) error = %v, want ErrUnsupportedAlg", alg, err)
+			}
+		})
+	}
+}
+
 func TestJWKSWithNoActiveKey(t *testing.T) {
 	r := &KeyRing{}
 	set, err := r.JWKS()
@@ -485,7 +632,10 @@ type failingKeyRing struct {
 	err error
 }
 
-func (f *failingKeyRing) Signer(Algorithm) (*Key, error)      { return nil, f.err }
+func (f *failingKeyRing) Signer(Algorithm) (*Key, error) { return nil, f.err }
+func (f *failingKeyRing) SignerByKID(string, Algorithm) (*Key, error) {
+	return nil, f.err
+}
 func (f *failingKeyRing) ActiveKid(Algorithm) (string, error) { return "", f.err }
 func (f *failingKeyRing) Lookup(string) (crypto.PublicKey, KeyStatus, error) {
 	return nil, "", f.err
@@ -580,6 +730,9 @@ type failingActiveKidKeyRing struct {
 }
 
 func (f *failingActiveKidKeyRing) Signer(Algorithm) (*Key, error) { return &Key{}, nil }
+func (f *failingActiveKidKeyRing) SignerByKID(string, Algorithm) (*Key, error) {
+	return &Key{}, nil
+}
 func (f *failingActiveKidKeyRing) ActiveKid(Algorithm) (string, error) {
 	return "", errors.New("no active key")
 }
@@ -657,11 +810,13 @@ func TestEnabledAlgorithms(t *testing.T) {
 
 func TestJWAAlgorithmsReturnsAllAlgorithms(t *testing.T) {
 	algs := JWAAlgorithms()
-	if len(algs) != 3 {
-		t.Fatalf("expected 3 algorithms, got %d", len(algs))
+	if len(algs) != len(allAlgorithms) {
+		t.Fatalf("expected %d algorithms, got %d", len(allAlgorithms), len(algs))
 	}
-	if algs[AlgRS256] == nil || algs[AlgES256] == nil || algs[AlgEdDSA] == nil {
-		t.Fatal("missing expected algorithm in JWAAlgorithms")
+	for _, alg := range allAlgorithms {
+		if algs[alg] == nil {
+			t.Fatalf("missing %s in JWAAlgorithms", alg)
+		}
 	}
 }
 
@@ -781,6 +936,62 @@ func TestStartRotationDisabledWhenIntervalNegative(t *testing.T) {
 	}
 }
 
+func TestRSABits(t *testing.T) {
+	rsaModulus := func(t *testing.T, r *KeyRing, alg Algorithm) int {
+		t.Helper()
+		k, err := r.Signer(alg)
+		if err != nil {
+			t.Fatalf("Signer(%s) error = %v", alg, err)
+		}
+		pub, ok := k.Public.(*rsa.PublicKey)
+		if !ok {
+			t.Fatalf("Public type = %T, want *rsa.PublicKey", k.Public)
+		}
+		return pub.N.BitLen()
+	}
+
+	t.Run("default is 2048", func(t *testing.T) {
+		r, err := New(time.Hour, []Algorithm{AlgRS256, AlgPS256})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		for _, alg := range []Algorithm{AlgRS256, AlgPS256} {
+			if got := rsaModulus(t, r, alg); got != 2048 {
+				t.Fatalf("%s modulus = %d bits, want 2048", alg, got)
+			}
+		}
+	})
+
+	t.Run("custom size is honored", func(t *testing.T) {
+		r, err := New(time.Hour, []Algorithm{AlgRS256}, WithRSABits(3072))
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		if got := rsaModulus(t, r, AlgRS256); got != 3072 {
+			t.Fatalf("modulus = %d bits, want 3072", got)
+		}
+	})
+
+	t.Run("minimum is accepted", func(t *testing.T) {
+		r, err := New(time.Hour, []Algorithm{AlgRS256}, WithRSABits(1024))
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		if got := rsaModulus(t, r, AlgRS256); got != 1024 {
+			t.Fatalf("modulus = %d bits, want 1024", got)
+		}
+	})
+
+	for _, bits := range []int{0, 512, 1023, -2048} {
+		t.Run(fmt.Sprintf("invalid input %d", bits), func(t *testing.T) {
+			_, err := New(time.Hour, []Algorithm{AlgRS256}, WithRSABits(bits))
+			if err == nil {
+				t.Fatalf("New() with RSA bits %d succeeded, want error", bits)
+			}
+		})
+	}
+}
+
 func TestNewRequiresAtLeastOneAlgorithm(t *testing.T) {
 	_, err := New(time.Hour, []Algorithm{})
 	if err == nil {
@@ -846,6 +1057,80 @@ func TestPublicKeyByKIDActiveRetiredPrunedAndUnknown(t *testing.T) {
 	if _, err := r.PublicKeyByKID("unknown-kid"); !errors.Is(err, ErrKeyNotFound) {
 		t.Fatalf("PublicKeyByKID(unknown) error = %v, want ErrKeyNotFound", err)
 	}
+}
+
+func TestSignerByKIDActiveRetiredMismatchUnknownAndPruned(t *testing.T) {
+	t.Run("active", func(t *testing.T) {
+		r := newTestRing(t, time.Hour, AlgRS256, AlgES256)
+		active, err := r.Signer(AlgRS256)
+		if err != nil {
+			t.Fatalf("Signer() error = %v", err)
+		}
+		got, err := r.SignerByKID(active.Kid(), AlgRS256)
+		if err != nil {
+			t.Fatalf("SignerByKID(active) error = %v", err)
+		}
+		if got.Kid() != active.Kid() {
+			t.Fatalf("SignerByKID(active) = %q, want %q", got.Kid(), active.Kid())
+		}
+	})
+
+	t.Run("retired", func(t *testing.T) {
+		r := newTestRing(t, time.Hour, AlgRS256)
+		retired, err := r.Signer(AlgRS256)
+		if err != nil {
+			t.Fatalf("Signer() error = %v", err)
+		}
+		if err := r.Rotate(); err != nil {
+			t.Fatalf("Rotate() error = %v", err)
+		}
+		got, err := r.SignerByKID(retired.Kid(), AlgRS256)
+		if err != nil {
+			t.Fatalf("SignerByKID(retired) error = %v", err)
+		}
+		if got.Kid() != retired.Kid() {
+			t.Fatalf("SignerByKID(retired) = %q, want %q", got.Kid(), retired.Kid())
+		}
+		if _, status, err := r.Lookup(retired.Kid()); err != nil || status != KeyStatusRetired {
+			t.Fatalf("retired key changed state: status=%q err=%v", status, err)
+		}
+	})
+
+	t.Run("algorithm mismatch", func(t *testing.T) {
+		r := newTestRing(t, time.Hour, AlgRS256, AlgES256)
+		rs, err := r.Signer(AlgRS256)
+		if err != nil {
+			t.Fatalf("Signer() error = %v", err)
+		}
+		_, err = r.SignerByKID(rs.Kid(), AlgES256)
+		if !errors.Is(err, ErrUnsupportedAlg) {
+			t.Fatalf("SignerByKID(mismatch) error = %v, want ErrUnsupportedAlg", err)
+		}
+	})
+
+	t.Run("unknown", func(t *testing.T) {
+		r := newTestRing(t, time.Hour, AlgRS256)
+		_, err := r.SignerByKID("unknown-kid", AlgRS256)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("SignerByKID(unknown) error = %v, want ErrKeyNotFound", err)
+		}
+	})
+
+	t.Run("post-prune", func(t *testing.T) {
+		r := newTestRing(t, time.Hour, AlgRS256)
+		old, err := r.Signer(AlgRS256)
+		if err != nil {
+			t.Fatalf("Signer() error = %v", err)
+		}
+		if err := r.Rotate(); err != nil {
+			t.Fatalf("Rotate() error = %v", err)
+		}
+		r.PruneAt(time.Now().Add(2 * time.Hour))
+		_, err = r.SignerByKID(old.Kid(), AlgRS256)
+		if !errors.Is(err, ErrKeyNotFound) {
+			t.Fatalf("SignerByKID(pruned) error = %v, want ErrKeyNotFound", err)
+		}
+	})
 }
 
 func TestLookupReportsActiveRetiredPrunedAndUnknown(t *testing.T) {

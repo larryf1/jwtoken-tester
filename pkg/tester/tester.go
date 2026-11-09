@@ -4,6 +4,7 @@
 package tester
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/x509"
@@ -33,6 +34,15 @@ const (
 	ES256 Algorithm = "ES256"
 	// EdDSA signs with Ed25519.
 	EdDSA Algorithm = "EdDSA"
+	RS384 Algorithm = "RS384"
+	RS512 Algorithm = "RS512"
+	PS256 Algorithm = "PS256"
+	PS384 Algorithm = "PS384"
+	PS512 Algorithm = "PS512"
+	ES384 Algorithm = "ES384"
+	ES512 Algorithm = "ES512"
+	HS256 Algorithm = "HS256"
+	None  Algorithm = "none"
 )
 
 var (
@@ -46,7 +56,7 @@ var (
 	ErrKeyNotFound = errors.New("tester: key not found")
 )
 
-var supportedAlgorithms = []Algorithm{RS256, ES256, EdDSA}
+var supportedAlgorithms = []Algorithm{RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA}
 
 // MintRequest describes a token to mint.
 type MintRequest struct {
@@ -56,7 +66,12 @@ type MintRequest struct {
 	// Algorithm selects the signing algorithm. The zero value selects RS256.
 	Algorithm Algorithm
 	// Headers are added to the protected JOSE header.
-	Headers map[string]any
+	Headers        map[string]any
+	KID            string
+	Typ            string
+	CTY            string
+	Corrupt        string
+	DuplicateClaim string
 }
 
 // Token is a minted bearer token.
@@ -85,12 +100,13 @@ type TestingT interface {
 // Server is a running in-process issuer. The caller owns it and must call
 // Close to release the listener and background goroutines.
 type Server struct {
-	ts       *httptest.Server
-	ring     *keyring.KeyRing
-	factory  *tokenfactory.Factory
-	internal *server.Server
-	handler  http.Handler
-	issuer   string
+	ts             *httptest.Server
+	ring           *keyring.KeyRing
+	factory        *tokenfactory.Factory
+	internal       *server.Server
+	handler        http.Handler
+	issuer         string
+	negativeTokens bool
 
 	cancel       context.CancelFunc
 	rotationDone <-chan struct{}
@@ -113,7 +129,7 @@ func Start(opts ...Option) (*Server, error) {
 		return nil, err
 	}
 
-	ring, err := keyring.New(cfg.gracePeriod, algorithms)
+	ring, err := keyring.New(cfg.gracePeriod, algorithms, keyring.WithRSABits(cfg.rsaBits))
 	if err != nil {
 		return nil, fmt.Errorf("tester: initialize key ring: %w", err)
 	}
@@ -131,11 +147,15 @@ func Start(opts ...Option) (*Server, error) {
 	}
 
 	factory := tokenfactory.NewFactory(ring, issuer, cfg.defaultTTL, cfg.maxTTL)
+	if len(cfg.hmacSecret) > 0 {
+		factory.SetHMACSecret(cfg.hmacSecret)
+	}
 	internal := server.New(ring, factory, issuer, "test-version", cfg.rateLimitRPS, cfg.rateLimitBurst,
 		server.WithLogger(cfg.logger),
 		server.WithAudience(cfg.audience),
 		server.WithScopes(cfg.scopes),
 		server.WithDiscoveryExtra(cfg.discoveryExtra),
+		server.WithAllowNegativeTokens(cfg.negativeTokens),
 	)
 	ts.Config.Handler = internal.Handler()
 
@@ -145,14 +165,15 @@ func Start(opts ...Option) (*Server, error) {
 	ts.Start()
 
 	return &Server{
-		ts:           ts,
-		ring:         ring,
-		factory:      factory,
-		internal:     internal,
-		handler:      ts.Config.Handler,
-		issuer:       issuer,
-		cancel:       cancel,
-		rotationDone: rotationDone,
+		ts:             ts,
+		ring:           ring,
+		factory:        factory,
+		internal:       internal,
+		handler:        ts.Config.Handler,
+		issuer:         issuer,
+		negativeTokens: cfg.negativeTokens,
+		cancel:         cancel,
+		rotationDone:   rotationDone,
 	}, nil
 }
 
@@ -194,6 +215,7 @@ func (s *Server) Mint(req MintRequest) (*Token, error) {
 		Claims:  req.Claims,
 		Alg:     string(req.Algorithm),
 		Headers: req.Headers,
+		KID:     req.KID, Typ: req.Typ, CTY: req.CTY, Corrupt: req.Corrupt, DuplicateClaim: req.DuplicateClaim, AllowNegative: s.negativeTokens,
 	})
 	if err != nil {
 		return nil, mapMintError(err)
@@ -325,6 +347,8 @@ func mapMintError(err error) error {
 		return fmt.Errorf("%w: %v", ErrTTLTooLong, err)
 	case errors.Is(err, tokenfactory.ErrInvalidRequest):
 		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	case errors.Is(err, tokenfactory.ErrNegativeDisabled):
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 	case errors.Is(err, keyring.ErrKeyNotFound):
 		return fmt.Errorf("%w: %v", ErrKeyNotFound, err)
 	default:
@@ -356,6 +380,9 @@ type config struct {
 	audience         string
 	scopes           []string
 	discoveryExtra   map[string]any
+	rsaBits          int
+	hmacSecret       []byte
+	negativeTokens   bool
 }
 
 func defaultConfig() *config {
@@ -368,6 +395,7 @@ func defaultConfig() *config {
 		rateLimitRPS:     100,
 		rateLimitBurst:   200,
 		logger:           slog.New(slog.DiscardHandler),
+		rsaBits:          2048,
 	}
 }
 
@@ -418,6 +446,17 @@ func WithAlgorithms(algs ...Algorithm) Option {
 		c.algorithms = algs
 	}
 }
+
+// WithRSAKeyBits configures generated RSA key size; valid values are at least 1024.
+func WithRSAKeyBits(bits int) Option { return func(c *config) { c.rsaBits = bits } }
+
+// WithHMACSecret enables HS256 using an explicit secret of at least 32 bytes.
+func WithHMACSecret(secret []byte) Option {
+	return func(c *config) { c.hmacSecret = bytes.Clone(secret) }
+}
+
+// WithNegativeTokens enables unsigned and deliberately malformed Mint requests.
+func WithNegativeTokens(enabled bool) Option { return func(c *config) { c.negativeTokens = enabled } }
 
 // WithRateLimit sets the per-IP request rate and burst allowance. A
 // non-positive rate or burst selects the 100 RPS / 200 burst default.

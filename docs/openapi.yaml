@@ -243,12 +243,26 @@ components:
             aud: my-service
             sub: user-123
           type: object
+        corrupt:
+          type: string
+        cty:
+          example: application/json
+          type: string
+        duplicate_claim:
+          example: sub
+          type: string
         headers:
           additionalProperties:
             type: string
           example:
             x-test-harness: run-7
           type: object
+        kid:
+          example: key-123
+          type: string
+        typ:
+          example: at+jwt
+          type: string
       type: object
     internal_server.TokenResponse:
       properties:
@@ -570,12 +584,13 @@ paths:
       - Tokens
   /token:
     post:
-      description: 'Mints a signed JWT with the requested claims and algorithm. Empty
-        body mints an anonymous token with defaults. Claim handling: iss, iat, nbf
-        are injected automatically; explicit values in claims win. exp, iat, nbf accept
+      description: 'Mints a JWT with the requested claims and algorithm. Empty body
+        mints an anonymous token with defaults. Claim handling: iss, iat, nbf are
+        injected automatically; explicit values in claims win. exp, iat, nbf accept
         epoch seconds, durations, or RFC 3339 timestamps. Omitted exp means now +
         DEFAULT_TTL (default 1h). Lifetimes beyond MAX_TTL (default 24h) are refused
-        with 400. Algorithms: RS256, ES256, EdDSA (must be enabled).'
+        with 400. Algorithms: RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384,
+        ES512, EdDSA (must be enabled). Negative controls require ALLOW_NEGATIVE_TOKENS.'
       operationId: mintToken
       requestBody:
         content:
@@ -598,6 +613,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/internal_server.ErrorResponse'
           description: Bad request (invalid JSON, unsupported algorithm, TTL too long)
+        "403":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/internal_server.ErrorResponse'
+          description: Negative token control is disabled
         "405":
           content:
             application/json:

@@ -167,6 +167,32 @@ func TestLoadServeConfigRejectsInvalidDiscoveryExtra(t *testing.T) {
 	})
 }
 
+func TestServeNewConfiguration(t *testing.T) {
+	t.Setenv("RSA_BITS", "3072")
+	t.Setenv("ALLOW_NEGATIVE_TOKENS", "false")
+	t.Setenv("ALGORITHMS", "RS256")
+	cfg, err := loadServeConfig([]string{"--rsa-bits", "4096", "--allow-negative-tokens"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RSABits != 4096 || !cfg.AllowNegative {
+		t.Fatalf("resolved config = %+v", cfg)
+	}
+	for _, raw := range []string{"HS256", "none"} {
+		if _, err := loadServeConfig([]string{"--algorithms", raw}, io.Discard); err == nil {
+			t.Errorf("serve accepted %s", raw)
+		}
+	}
+	t.Setenv("RSA_BITS", "nope")
+	if _, err := loadServeConfig(nil, io.Discard); err == nil {
+		t.Fatal("invalid RSA_BITS was accepted")
+	}
+	t.Setenv("ALLOW_NEGATIVE_TOKENS", "yes")
+	if _, err := loadServeConfig(nil, io.Discard); err == nil {
+		t.Fatal("invalid ALLOW_NEGATIVE_TOKENS was accepted")
+	}
+}
+
 func TestParseScopes(t *testing.T) {
 	cases := map[string][]string{
 		"":                nil,

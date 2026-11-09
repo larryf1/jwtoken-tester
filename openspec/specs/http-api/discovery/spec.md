@@ -7,11 +7,15 @@ Serves an OpenID Connect-style discovery document so JWT-aware test clients can 
 ## Requirements
 
 ### Requirement: OIDC discovery document
-`GET /.well-known/openid-configuration` SHALL return JSON advertising `issuer`, `jwks_uri`, `token_endpoint`, `introspection_endpoint`, `grant_types_supported`, `token_endpoint_auth_methods_supported`, `subject_types_supported`, `id_token_signing_alg_values_supported`, `response_types_supported`, and `claims_supported`. `token_endpoint`, `jwks_uri`, and `introspection_endpoint` SHALL be derived from the configured issuer. The document SHALL NOT advertise an `authorization_endpoint`, `code_challenge_methods_supported`, or `userinfo_endpoint`.
+`GET /.well-known/openid-configuration` SHALL return JSON advertising `issuer`, `jwks_uri`, `token_endpoint`, `introspection_endpoint`, `grant_types_supported`, `token_endpoint_auth_methods_supported`, `subject_types_supported`, `id_token_signing_alg_values_supported`, `response_types_supported`, and `claims_supported`. `token_endpoint`, `jwks_uri`, and `introspection_endpoint` SHALL be derived from the configured issuer. The document SHALL NOT advertise an `authorization_endpoint`, `code_challenge_methods_supported`, or `userinfo_endpoint`. The `id_token_signing_alg_values_supported` list SHALL contain every enabled asymmetric algorithm and SHALL NOT contain `none` or `HS256`.
 
 #### Scenario: Discovery lists enabled algorithms
 - **WHEN** a client requests the discovery document and only RS256 is enabled
 - **THEN** the response advertises issuer, derived endpoints, and `id_token_signing_alg_values_supported` of `["RS256"]`
+
+#### Scenario: Discovery lists new asymmetric algorithms
+- **WHEN** RS384, PS256, PS512, ES384, and ES512 are enabled
+- **THEN** `id_token_signing_alg_values_supported` contains all five algorithms
 
 #### Scenario: Discovery includes standard metadata
 - **WHEN** a client requests the discovery document
@@ -36,6 +40,10 @@ Serves an OpenID Connect-style discovery document so JWT-aware test clients can 
 #### Scenario: Response types remain for metadata compatibility
 - **WHEN** a client requests the discovery document
 - **THEN** `response_types_supported` contains `token` even though no authorization endpoint is advertised
+
+#### Scenario: none and HS256 are not advertised
+- **WHEN** negative-token controls or an HMAC secret are configured
+- **THEN** `id_token_signing_alg_values_supported` contains neither `none` nor `HS256`
 
 ### Requirement: RFC 8414 authorization server metadata
 `GET /.well-known/oauth-authorization-server` SHALL return the same JSON metadata document as the OIDC discovery endpoint, including `issuer`, `jwks_uri`, `token_endpoint`, `introspection_endpoint`, `grant_types_supported`, `response_types_supported`, and `token_endpoint_auth_methods_supported`.
@@ -62,3 +70,15 @@ When `DISCOVERY_EXTRA_JSON` is set to a JSON object, its members SHALL be merged
 #### Scenario: Invalid extra metadata fails startup
 - **WHEN** `DISCOVERY_EXTRA_JSON` is not a JSON object
 - **THEN** the server fails to start with a configuration error
+
+### Requirement: Unsigned and HMAC algorithms are never advertised
+The discovery documents SHALL NOT advertise `none` or `HS256` in `id_token_signing_alg_values_supported` or any other algorithm list, regardless of CLI or embedding HMAC configuration.
+
+#### Scenario: none is omitted
+- **WHEN** negative-token controls are enabled
+- **THEN** neither discovery document advertises `none`
+
+#### Scenario: HS256 is omitted
+- **WHEN** an embedded issuer is configured with an HMAC secret
+- **THEN** neither discovery document advertises `HS256`
+
