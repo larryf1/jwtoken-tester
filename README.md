@@ -46,9 +46,11 @@ of hacking basic-auth shortcuts into your middleware.
 └──────────────────────────────────────────────────┘
 ```
 
-Tokens are standards-compliant JWS compact serializations (RS256, ES256, EdDSA), so real-world
+Tokens are standards-compliant JWS compact serializations. Asymmetric signing supports `RS256`,
+`RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, `ES512`, and `EdDSA`, so real-world
 JWT middleware (Spring Security, go-jose, golang-jwt, jsonwebtoken, …) accepts them unchanged —
-most libraries auto-configure from the discovery document alone.
+most libraries auto-configure from the discovery document alone. The default set remains
+`RS256,ES256,EdDSA`; the other algorithms are opt-in through `ALGORITHMS`.
 
 Each signing key's `kid` is the unpadded base64url SHA-256 [RFC 7638](https://datatracker.ietf.org/doc/html/rfc7638)
 thumbprint of its public JWK, so JWKS consumers can match keys without special-casing.
@@ -218,6 +220,9 @@ The binary has these modes:
 - `print-token` — mint one token and print only the `access_token` to stdout, useful in shell
   scripts that cannot reach a running server:
   `jwtoken-tester print-token --claims '{"sub":"user-1","aud":["my-service"]}' --alg ES256`
+  It also accepts `--kid`, `--typ`, `--cty`, `--corrupt`, `--duplicate-claim`, and `--rsa-bits`.
+  `--alg none` creates an unsigned token; HS256 requires `HMAC_SECRET` or `--hmac-secret-file`
+  containing at least 32 bytes.
 - `decode` — print a token's JOSE header and claims without keys, network access, or trust.
 - `verify` — verify a token against a JWKS URL, a JWKS file, or a discovered issuer.
 - `healthcheck` — probe `/healthz` using the binary itself, so distroless containers do not need
@@ -298,8 +303,13 @@ Request body is JSON (empty body mints an anonymous token with defaults):
 | Field     | Type             | Description                                                        |
 |-----------|------------------|--------------------------------------------------------------------|
 | `claims`  | object           | Arbitrary claim set; standard claims included                       |
-| `alg`     | string, optional | One of `RS256`, `ES256`, `EdDSA` (must be enabled); anything else → `400` |
+| `alg`     | string, optional | An enabled asymmetric algorithm; `none` requires negative mode; anything else → `400` |
 | `headers` | object, optional | Extra protected JOSE header parameters to embed                     |
+| `kid` | string, optional | Select a matching active or retired key, or request wrong `kid` in negative mode |
+| `typ` | string, optional | Protected `typ`; defaults to `JWT` |
+| `cty` | string, optional | Protected `cty` |
+| `corrupt` | string, optional | Negative control: `signature`, `payload`, `header`, `truncate`, `duplicate_claims` |
+| `duplicate_claim` | string, optional | Claim name for `duplicate_claims`; defaults to `sub` |
 
 Rules:
 
@@ -309,6 +319,9 @@ Rules:
   (`"90m"`, `"in 1h"`, negative for already-expired), or RFC 3339 timestamps.
 - Omitted `exp` means now + `DEFAULT_TTL`. Lifetimes beyond `MAX_TTL` are refused with `400`.
   Tokens that are *already expired* are minted happily — handy for negative tests.
+- `kid`, `typ`, and `cty` control protected headers. Reserved JOSE fields cannot be overridden in
+  `headers`. `alg: none` and `corrupt` controls require `ALLOW_NEGATIVE_TOKENS=true` or the flag.
+- Disabled negative controls return `403`; malformed requests return `400`.
 - Empty body ⇒ anonymous token carrying just the injected defaults; good smoke test.
 
 Error responses are `{"error": "<message>"}` with status `400` (bad JSON, unsupported alg,
@@ -496,7 +509,7 @@ values. Invalid JSON or a non-object value fails startup.
 ### `GET /.well-known/jwks.json`
 
 The live public key set: active key plus retired keys still inside their grace window,
-each tagged `use=sig`, `alg` (RS256/ES256/EdDSA), and thumbprint-derived `kid`.
+each tagged `use=sig`, the enabled asymmetric `alg` that produced it, and a thumbprint-derived `kid`.
 
 ### `GET /.well-known/jwks.json/{kid}`
 
@@ -528,12 +541,19 @@ Every setting can be passed as an environment variable or the equivalent flag (f
 | `MAX_TTL`            | `--max-ttl`           | `24h`                   | lifetime cap, `0` disables             |
 | `ROTATION_INTERVAL`  | `--rotation-interval` | `30m`                   | key rotation cadence, `0` disables     |
 | `GRACE_PERIOD`       | `--grace-period`      | `25h`                   | retired keys stay published this long  |
-| `ALGORITHMS`         | `--algorithms`        | `RS256,ES256,EdDSA`     | comma-separated algorithms to enable   |
+| `ALGORITHMS`         | `--algorithms`        | `RS256,ES256,EdDSA`     | comma-separated asymmetric algorithms to enable |
+| `RSA_BITS`           | `--rsa-bits`          | `2048`                  | RSA modulus size; minimum 1024                 |
+| `ALLOW_NEGATIVE_TOKENS` | `--allow-negative-tokens` | `false`          | enable negative controls on `POST /token`     |
+| `HMAC_SECRET`        | `--hmac-secret-file`  | *(unset)*               | HS256 secret for `print-token` only; minimum 32 bytes |
 | `RATE_LIMIT_RPS`     | `--rate-limit-rps`    | `100`                   | per-IP requests per second             |
 | `RATE_LIMIT_BURST`   | `--rate-limit-burst`  | `200`                   | per-IP burst allowance                 |
 | `AUDIENCE`           | `--audience`          | *(unset)*               | `aud` claim on `/oauth/token` tokens   |
 | `SCOPES`             | `--scopes`            | *(unset)*               | comma-separated scopes advertised in discovery |
 | `DISCOVERY_EXTRA_JSON` | `--discovery-extra-json` | *(unset)*         | JSON object merged into discovery metadata |
+
+`ALGORITHMS` accepts `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`,
+`ES512`, and `EdDSA`. The default remains `RS256,ES256,EdDSA`; every other algorithm is opt-in.
+`serve` rejects `HS256` and `none`. Negative token controls are disabled unless explicitly enabled.
 
 Durations use Go syntax: `30s`, `45m`, `12h`. Keep `GRACE_PERIOD ≥ MAX_TTL` so tokens minted
 just before a rotation stay verifiable until they expire.
@@ -576,11 +596,12 @@ func TestProtectedEndpoint(t *testing.T) {
 }
 ```
 
-Options mirror the server settings: `WithAlgorithms`, `WithIssuer`, `WithDefaultTTL`,
+Options mirror the server settings: `WithAlgorithms`, `WithRSAKeyBits`, `WithHMACSecret`,
+`WithNegativeTokens`, `WithIssuer`, `WithDefaultTTL`,
 `WithMaxTTL`, `WithRotationInterval`, `WithGracePeriod`, `WithRateLimit`, `WithLogger`,
 `WithAudience`, `WithScopes`, and `WithDiscoveryExtra`. An empty issuer selects the bound server URL.
 Enabled algorithms use
-`tester.RS256`, `tester.ES256`, and `tester.EdDSA`; `Mint` returns `ErrUnsupportedAlgorithm`,
+the asymmetric algorithm constants; HS256 and `tester.None` are request selectors only. `Mint` returns `ErrUnsupportedAlgorithm`,
 `ErrTTLTooLong`, or `ErrInvalidRequest` for rejected requests.
 
 `NewServer` is the testing wrapper: it panics if startup fails and registers
@@ -637,13 +658,13 @@ Shipped:
       `verify` CLI commands
 - [x] Standards-compliant `POST /oauth/token` (client credentials), RFC 7662 `POST /introspect`,
       richer shared discovery metadata, RFC 8414 metadata, and `alg`/`ttl` selection
+- [x] Expanded asymmetric algorithms, RSA sizing, HS256 one-shot/embedding support, and gated
+      negative-token controls
 
 Candidate enhancements below are **not commitments**. See [`FUTURE.md`](FUTURE.md) for effort,
 value, design notes, and open questions.
 
 - [ ] Authorization-code + PKCE flow, `id_token`/`/userinfo`, and claim/IdP profiles
-- [ ] More algorithms (PS256/PS384/PS512, RS384/RS512, ES384/ES512, optional HMAC) and
-      negative-token controls (`alg: none`, malformed tokens, `kid`/`typ`/`x5c` overrides)
 - [ ] Claim profiles for common IdPs (Entra ID, Auth0, Keycloak, Okta, Cognito) and
       configurable default claims
 - [ ] JWKS caching headers (ETag/304, `Cache-Control`) and `no-store` on token responses

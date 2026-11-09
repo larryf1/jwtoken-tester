@@ -233,6 +233,32 @@ func TestVerifyAgainstJWKSFile(t *testing.T) {
 	})
 }
 
+func TestVerifyCLIExpandedAlgorithmsAndNegativeTokens(t *testing.T) {
+	for _, alg := range []keyring.Algorithm{keyring.AlgRS384, keyring.AlgRS512, keyring.AlgPS256, keyring.AlgPS384, keyring.AlgPS512, keyring.AlgES384, keyring.AlgES512} {
+		t.Run(string(alg), func(t *testing.T) {
+			issuer := newCLITestIssuer(t, "https://issuer.example", alg)
+			token := issuer.mint(t, map[string]any{"sub": "cli"}, string(alg))
+			code, stdout, stderr := runVerifyCLI(t, []string{"--jwks", writeJWKS(t, issuer.jwks), token}, "")
+			if code != 0 || !strings.Contains(stdout, "valid: token verified") {
+				t.Fatalf("verify code=%d stdout=%s stderr=%s", code, stdout, stderr)
+			}
+		})
+	}
+	t.Run("none and corrupt rejected", func(t *testing.T) {
+		issuer := newCLITestIssuer(t, "https://issuer.example", keyring.AlgRS256)
+		for _, req := range []*tokenfactory.Request{{Alg: "none", AllowNegative: true}, {Alg: "RS256", Corrupt: "signature", AllowNegative: true}} {
+			token, err := issuer.factory.Mint(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			code, stdout, stderr := runVerifyCLI(t, []string{"--jwks", writeJWKS(t, issuer.jwks), token.AccessToken}, "")
+			if code == 0 || strings.Contains(stdout, `"valid": true`) {
+				t.Fatalf("negative token accepted: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+			}
+		}
+	})
+}
+
 func TestVerifyAgainstJWKSURL(t *testing.T) {
 	issuer := newCLITestIssuer(t, "http://127.0.0.1:8080")
 	token := issuer.mint(t, map[string]any{"sub": "user-1"}, "")

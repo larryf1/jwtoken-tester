@@ -1,3 +1,9 @@
+## Unreleased
+
+### Features
+
+* add opt-in asymmetric algorithms, HS256 one-shot minting, and negative-token controls
+
 ## v2.5.0 (2026-11-04)
 
 ### Features

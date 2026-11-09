@@ -84,6 +84,7 @@ func TestHealthEndpointReportsWarningAndActiveKid(t *testing.T) {
 		{keyring.AlgES256},
 		{keyring.AlgEdDSA},
 		{keyring.AlgRS256, keyring.AlgES256, keyring.AlgEdDSA},
+		{keyring.AlgRS384, keyring.AlgPS256, keyring.AlgES384},
 	} {
 		t.Run(strings.Join(mapAlgorithms(algs), ","), func(t *testing.T) {
 			ts, _ := newTestServer(t, algs...)
@@ -373,6 +374,7 @@ func TestDiscoveryDocumentPointsAtIssuerAndJWKS(t *testing.T) {
 		{keyring.AlgES256},
 		{keyring.AlgEdDSA},
 		{keyring.AlgRS256, keyring.AlgES256, keyring.AlgEdDSA},
+		{keyring.AlgRS384, keyring.AlgPS256, keyring.AlgPS512, keyring.AlgES384, keyring.AlgES512},
 	} {
 		t.Run(strings.Join(mapAlgorithms(algs), ","), func(t *testing.T) {
 			ts, _ := newTestServer(t, algs...)
@@ -698,6 +700,51 @@ func TestOversizedLifetimeRejected(t *testing.T) {
 	}
 }
 
+func TestNegativeTokenGateComesFromServerOption(t *testing.T) {
+	ring, err := keyring.New(time.Hour, []keyring.Algorithm{keyring.AlgRS256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+	disabled := httptest.NewServer(New(ring, factory, testIssuer, "test", 100, 200).Handler())
+	defer disabled.Close()
+	resp, _ := postJSON(t, disabled.URL+"/token", `{"alg":"none","allow_negative":true}`)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("body opt-in status = %d, want 403", resp.StatusCode)
+	}
+	enabled := httptest.NewServer(New(ring, factory, testIssuer, "test", 100, 200, WithAllowNegativeTokens(true)).Handler())
+	defer enabled.Close()
+	resp, data := postJSON(t, enabled.URL+"/token", `{"alg":"none"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("enabled status = %d, body = %s", resp.StatusCode, data)
+	}
+}
+
+func TestNewAlgorithmsVerifyThroughHTTP(t *testing.T) {
+	for _, alg := range []keyring.Algorithm{keyring.AlgRS384, keyring.AlgRS512, keyring.AlgPS256, keyring.AlgPS384, keyring.AlgPS512, keyring.AlgES384, keyring.AlgES512} {
+		t.Run(string(alg), func(t *testing.T) {
+			ts, ring := newTestServer(t, alg)
+			factory := tokenfactory.NewFactory(ring, testIssuer, time.Hour, 24*time.Hour)
+			minted, err := factory.Mint(&tokenfactory.Request{Alg: string(alg)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(map[string]string{"token": minted.AccessToken})
+			resp, data := postJSON(t, ts.URL+"/verify", string(body))
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("verify status = %d, body=%s", resp.StatusCode, data)
+			}
+			var verdict map[string]any
+			if err := json.Unmarshal(data, &verdict); err != nil {
+				t.Fatal(err)
+			}
+			if verdict["valid"] != true {
+				t.Fatalf("verify verdict = %s", data)
+			}
+		})
+	}
+}
+
 func TestWrongMethodOnTokenEndpoint(t *testing.T) {
 	ts, _ := newTestServer(t, keyring.AlgRS256)
 	resp, err := http.Get(ts.URL + "/token")
@@ -839,6 +886,10 @@ func (n *noActiveKeyRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 	return nil, keyring.ErrNoActiveKey
 }
 
+func (n *noActiveKeyRing) SignerByKID(string, keyring.Algorithm) (*keyring.Key, error) {
+	return nil, keyring.ErrNoActiveKey
+}
+
 func (n *noActiveKeyRing) JWKS() (jwk.Set, error) {
 	return jwk.NewSet(), nil
 }
@@ -877,6 +928,9 @@ type failingJWKSRing struct{}
 
 func (f *failingJWKSRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 	return nil, keyring.ErrNoActiveKey
+}
+func (f *failingJWKSRing) SignerByKID(string, keyring.Algorithm) (*keyring.Key, error) {
+	return nil, errors.New("jwks failed")
 }
 func (f *failingJWKSRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", keyring.ErrNoActiveKey
@@ -951,6 +1005,9 @@ type internalErrRing struct{}
 func (r *internalErrRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
 	return nil, errors.New("unexpected error")
 }
+func (r *internalErrRing) SignerByKID(string, keyring.Algorithm) (*keyring.Key, error) {
+	return nil, errors.New("unexpected error")
+}
 func (r *internalErrRing) ActiveKid(keyring.Algorithm) (string, error) {
 	return "", errors.New("unexpected error")
 }
@@ -995,6 +1052,9 @@ type marshalErrorKey struct {
 type failingMarshalRing struct{}
 
 func (f *failingMarshalRing) Signer(keyring.Algorithm) (*keyring.Key, error) {
+	return nil, keyring.ErrNoActiveKey
+}
+func (f *failingMarshalRing) SignerByKID(string, keyring.Algorithm) (*keyring.Key, error) {
 	return nil, keyring.ErrNoActiveKey
 }
 func (f *failingMarshalRing) ActiveKid(keyring.Algorithm) (string, error) {

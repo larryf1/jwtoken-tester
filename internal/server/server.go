@@ -68,9 +68,10 @@ type Server struct {
 	lastSeen       map[string]time.Time
 	mu             sync.Mutex
 
-	audience       string
-	scopes         []string
-	discoveryExtra map[string]any
+	audience            string
+	scopes              []string
+	discoveryExtra      map[string]any
+	allowNegativeTokens bool
 
 	logger        *slog.Logger
 	cleanupCancel context.CancelFunc
@@ -80,6 +81,11 @@ type Server struct {
 
 // Option configures optional server behavior.
 type Option func(*Server)
+
+// WithAllowNegativeTokens enables deliberate negative token controls on POST /token.
+func WithAllowNegativeTokens(allow bool) Option {
+	return func(s *Server) { s.allowNegativeTokens = allow }
+}
 
 // WithLogger routes token audit events to logger. A nil logger is ignored so
 // the default logger remains in effect.
@@ -480,10 +486,11 @@ func (s *Server) handleAuthorizationServerMetadata(w http.ResponseWriter, r *htt
 //	@ID			mintToken
 //	@Tags		Tokens
 //	@Summary	Mint a JWT
-//	@Description	Mints a signed JWT with the requested claims and algorithm. Empty body mints an anonymous token with defaults. Claim handling: iss, iat, nbf are injected automatically; explicit values in claims win. exp, iat, nbf accept epoch seconds, durations, or RFC 3339 timestamps. Omitted exp means now + DEFAULT_TTL (default 1h). Lifetimes beyond MAX_TTL (default 24h) are refused with 400. Algorithms: RS256, ES256, EdDSA (must be enabled).
+//	@Description	Mints a JWT with the requested claims and algorithm. Empty body mints an anonymous token with defaults. Claim handling: iss, iat, nbf are injected automatically; explicit values in claims win. exp, iat, nbf accept epoch seconds, durations, or RFC 3339 timestamps. Omitted exp means now + DEFAULT_TTL (default 1h). Lifetimes beyond MAX_TTL (default 24h) are refused with 400. Algorithms: RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512, EdDSA (must be enabled). Negative controls require ALLOW_NEGATIVE_TOKENS.
 //	@Param		request	body	TokenRequest	false	"Token minting request (empty body uses defaults)"
 //	@Success	200	{object}	TokenResponse	"Token minted successfully"
 //	@Failure	400	{object}	ErrorResponse	"Bad request (invalid JSON, unsupported algorithm, TTL too long)"
+//	@Failure	403	{object}	ErrorResponse	"Negative token control is disabled"
 //	@Failure	405	{object}	ErrorResponse	"Method not allowed"
 //	@Failure	429	{object}	ErrorResponse	"Rate limit exceeded"
 //	@Failure	503	{object}	ErrorResponse	"No active signing key available"
@@ -495,18 +502,22 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
+	req.AllowNegative = s.allowNegativeTokens
 
 	resp, err := s.Factory.Mint(&req)
 	if err != nil {
 		s.logTokenEvent(r, "token_mint_failed", map[string]any{
 			"error":         err.Error(),
 			"requested_alg": req.Alg,
+			"control":       requestedControl(req),
 		})
 		switch {
 		case errors.Is(err, tokenfactory.ErrInvalidRequest),
 			errors.Is(err, tokenfactory.ErrUnsupportedAlg),
 			errors.Is(err, tokenfactory.ErrTTLTooLong):
 			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, tokenfactory.ErrNegativeDisabled):
+			writeError(w, http.StatusForbidden, err.Error())
 		case errors.Is(err, keyring.ErrNoActiveKey):
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 		default:
@@ -519,11 +530,18 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	if alg == "" {
 		alg = string(keyring.AlgRS256)
 	}
-	signer, _ := s.ring.Signer(keyring.Algorithm(alg))
+	var kid string
+	if alg != "none" && alg != "HS256" {
+		signer, signerErr := s.ring.Signer(keyring.Algorithm(alg))
+		if signerErr == nil {
+			kid = signer.Kid()
+		}
+	}
 
 	s.logTokenEvent(r, "token_minted", map[string]any{
 		"alg":                alg,
-		"kid":                signer.Kid(),
+		"kid":                kid,
+		"control":            requestedControl(req),
 		"expires_in":         resp.ExpiresIn,
 		"has_custom_claims":  len(req.Claims) > 0,
 		"has_custom_headers": len(req.Headers) > 0,
@@ -1061,6 +1079,22 @@ func (s *Server) logTokenEvent(r *http.Request, event string, attrs map[string]a
 		logger = slog.Default()
 	}
 	logger.Info("token_audit", args...)
+}
+
+func requestedControl(req tokenfactory.Request) string {
+	if req.Corrupt != "" {
+		return req.Corrupt
+	}
+	if req.DuplicateClaim != "" {
+		return "duplicate_claims"
+	}
+	if req.Alg == "none" {
+		return "none"
+	}
+	if req.KID != "" {
+		return "kid_override"
+	}
+	return ""
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

@@ -1,5 +1,9 @@
 # cli Specification
 
+
+
+
+
 ## Purpose
 
 Defines the `jwtoken-tester` command-line entrypoint — its subcommands, usage output, one-shot token printing, graceful shutdown, and version resolution.
@@ -122,3 +126,47 @@ The `verify` command SHALL verify a token against keys obtained from `--jwks <ur
 #### Scenario: JSON output
 - **WHEN** `--json` is supplied
 - **THEN** the output is the same verdict envelope the HTTP endpoint returns
+
+### Requirement: print-token accepts algorithm and header controls
+`print-token` SHALL accept `--alg` for every enabled asymmetric algorithm, `--algorithms`, `--headers`, `--kid`, `--typ`, `--cty`, and `--rsa-bits`. `--kid` SHALL set the protected header and SHALL select a generated key when it matches. `--typ` SHALL default to `JWT`. Conflicting reserved values in `--headers` SHALL be rejected.
+
+#### Scenario: New asymmetric algorithm printed
+- **WHEN** `print-token --alg PS256` is run
+- **THEN** the printed token header uses PS256
+
+#### Scenario: Custom typ and cty printed
+- **WHEN** `print-token --typ at+jwt --cty application/json` is run
+- **THEN** the printed token header carries both values
+
+#### Scenario: Unknown kid produces a wrong-kid token
+- **WHEN** `print-token --kid does-not-exist` is run
+- **THEN** the printed token is signed by the active key and carries the supplied `kid`
+
+#### Scenario: Conflicting reserved header rejected
+- **WHEN** `--headers` supplies `kid`, `typ`, or `cty` that conflicts with its dedicated flag
+- **THEN** the command reports an error and exits non-zero
+
+### Requirement: print-token supports negative and HMAC modes
+`print-token` SHALL accept `--alg none`, `--corrupt <mode>`, `--duplicate-claim <name>`, and `--hmac-secret-file <path>`. Negative modes SHALL be enabled by the explicit flag without a server-wide gate. HS256 SHALL require a shared secret of at least 32 bytes.
+
+#### Scenario: Unsigned token printed
+- **WHEN** `print-token --alg none` is run
+- **THEN** the printed token has an `alg` of `none` and an empty signature segment
+
+#### Scenario: Corrupt token printed
+- **WHEN** `print-token --corrupt signature` is run
+- **THEN** the printed token has a signature that does not verify
+
+#### Scenario: Duplicate claim printed
+- **WHEN** `print-token --corrupt duplicate_claims --duplicate-claim sub` is run
+- **THEN** the printed payload contains a repeated `sub` claim
+
+#### Scenario: HS256 printed with a secret
+- **WHEN** `print-token --alg HS256 --hmac-secret-file secret.txt` is run with a secret of at least 32 bytes
+- **THEN** the printed token is signed with HS256
+
+#### Scenario: HS256 without a secret fails
+- **WHEN** `print-token --alg HS256` is run without a configured secret
+- **THEN** the command reports an error and exits non-zero
+
+

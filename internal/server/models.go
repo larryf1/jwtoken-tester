@@ -57,9 +57,14 @@ type DiscoveryResponse struct {
 
 // TokenRequest is the request body for POST /token.
 type TokenRequest struct {
-	Claims  map[string]any `json:"claims,omitempty" description:"Arbitrary claim set; standard claims included" example:"sub:user-123,aud:my-service" swaggertype:"object,string"`
-	Alg     string         `json:"alg,omitempty" enum:"RS256,ES256,EdDSA" description:"Signing algorithm (must be enabled)" example:"RS256"`
-	Headers map[string]any `json:"headers,omitempty" description:"Extra protected JOSE header parameters to embed" example:"x-test-harness:run-7" swaggertype:"object,string"`
+	Claims         map[string]any `json:"claims,omitempty" description:"Arbitrary claim set; standard claims included" example:"sub:user-123,aud:my-service" swaggertype:"object,string"`
+	Alg            string         `json:"alg,omitempty" enum:"RS256,RS384,RS512,PS256,PS384,PS512,ES256,ES384,ES512,EdDSA,none" description:"Signing algorithm (must be enabled; negative controls require server opt-in)" example:"RS256"`
+	Headers        map[string]any `json:"headers,omitempty" description:"Extra protected JOSE header parameters to embed" example:"x-test-harness:run-7" swaggertype:"object,string"`
+	KID            string         `json:"kid,omitempty" description:"Protected key ID override" example:"key-123"`
+	Typ            string         `json:"typ,omitempty" description:"Protected typ header; defaults to JWT" example:"at+jwt"`
+	CTY            string         `json:"cty,omitempty" description:"Protected cty header" example:"application/json"`
+	Corrupt        string         `json:"corrupt,omitempty" enum:"signature,payload,header,truncate,duplicate_claims" description:"Negative token defect; requires server opt-in"`
+	DuplicateClaim string         `json:"duplicate_claim,omitempty" description:"Claim name to duplicate for duplicate_claims" example:"sub"`
 }
 
 // TokenResponse is the response body for token minting endpoints.
