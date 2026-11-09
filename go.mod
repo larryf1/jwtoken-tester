@@ -11,4 +11,5 @@ require (
 require (
 	github.com/lestrrat-go/dsig v1.4.0 // indirect
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )
