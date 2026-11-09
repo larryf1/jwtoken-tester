@@ -33,7 +33,7 @@ exposure, native TLS) are explicitly opt-in and must be labeled loudly.
 | 1 | Public `pkg/tester` API + leak-free lifecycle | — | Shipped | Delivered in v2.4.0 with a neutral surface and resource-only `Close`. |
 | 2 | Verification and `decode`/`verify` CLI | — | Shipped | `POST /verify` and both CLI commands shipped; introspection shipped with #3. |
 | 3 | Standards-compliant OAuth token endpoint + richer discovery | — | Shipped | Delivered in the unreleased release; authorization-code/PKCE remains deferred to #12. |
-| 4 | More algorithms + negative-token controls | M | High | Broadens consumer compatibility and negative-path coverage. |
+| 4 | More algorithms + negative-token controls | — | Shipped | Delivered with `add-algorithms-and-negative-tokens`; see the shipped status and scope below. |
 | 5 | Claim/IdP profiles + `id_token`/`/userinfo` | M | High | Makes tokens resemble real gateways instead of hand-built maps. |
 | 6 | JWKS caching headers | S | Medium | Cuts polling and enables realistic cache/rotation tests. |
 | 7 | Operability: logs, metrics, readiness, timeouts | S–M | Medium | Better CI/container behavior and incident debugging. |
