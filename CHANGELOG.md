@@ -1,3 +1,13 @@
+## v2.6.0 (2026-11-09)
+
+### Features
+- feat: add OpenAPI route synchronization check and update Makefile for… (#25)
+
+### Other Changes
+- docs: Swagger generation (#26)
+- chore(semrel): update changelog generation settings to bundle changes before tagging
+- chore(deps): bump docker/login-action from 4.7.0 to 4.8.0 in the github-actions group (#24)
+
 ## Unreleased
 
 ### Features

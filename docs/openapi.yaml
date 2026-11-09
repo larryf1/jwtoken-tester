@@ -349,7 +349,7 @@ info:
     name: MIT
     url: https://opensource.org/licenses/MIT
   title: jwtoken-tester API
-  version: 2.5.0
+  version: 2.6.0
 openapi: 3.1.0
 paths:
   /:
