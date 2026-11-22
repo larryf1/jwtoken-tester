@@ -94,8 +94,10 @@ lint-commits: ## Lint commits on this branch against Conventional Commits (same 
 lint-openapi: ## Check that server routes match docs/openapi.yaml
 	go run ./cmd/openapi-lint
 
+GOVULNCHECK_VERSION := v1.10.0
+
 govulncheck: ## Scan the module for known vulnerabilities (same as CI)
-	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 vet: ## Static analysis with go vet
 	go vet ./...

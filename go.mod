@@ -1,6 +1,6 @@
 module github.com/larryf1/jwtoken-tester/v2
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -11,5 +11,4 @@ require (
 require (
 	github.com/lestrrat-go/dsig v1.4.0 // indirect
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
-	golang.org/x/text v0.43.0 // indirect
 )
